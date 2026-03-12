@@ -65,7 +65,34 @@ def fetch_realtime_etf_data():
         print(f"데이터 수집 에러: {e}")
         return []
 
+def is_market_open():
+    """
+    한국 시간(KST) 기준으로 장 운영 시간인지 확인합니다.
+    평일 08:50 ~ 16:00 (장 시작 전 호가 및 장후 정리 시간 포함)
+    """
+    # GitHub Actions 서버는 UTC 기준이므로 한국 시간(UTC+9)으로 변환
+    now_utc = datetime.utcnow()
+    now_kst = now_utc + timedelta(hours=9)
+    
+    # 요일 확인 (0:월, 1:화, 2:수, 3:목, 4:금, 5:토, 6:일)
+    weekday = now_kst.weekday()
+    if weekday > 4:  # 토, 일 제외
+        return False, "주말입니다."
+    
+    # 시간 확인 (HHMM 형식)
+    now_time = int(now_kst.strftime("%H%M"))
+    if not (850 <= now_time <= 1600):
+        return False, f"장외 시간입니다. (현재 KST {now_kst.strftime('%H:%M')})"
+    
+    return True, "장 운영 시간입니다."
+
 def main():
+    # 0. 장 운영 시간 체크
+    is_open, reason = is_market_open()
+    if not is_open:
+        print(f"[-] 모니터링을 건너뜁니다: {reason}")
+        return
+
     now = datetime.now()
     now_str = now.strftime('%Y-%m-%d %H:%M:%S')
     today_str = now.strftime('%Y-%m-%d')
