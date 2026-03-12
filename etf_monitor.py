@@ -72,6 +72,7 @@ def is_market_open():
     return True, "운영 시간", now_time
 
 def main():
+    # 0. 장 운영 시간 체크 (주말 포함)
     is_open, reason, kst_time = is_market_open()
     if not is_open:
         print(f"[-] 모니터링 건너뜀: {reason}")
@@ -79,6 +80,15 @@ def main():
 
     now = datetime.now()
     today_str = now.strftime('%Y-%m-%d')
+    
+    # 데이터 가져오기
+    all_items = fetch_realtime_etf_data()
+    
+    # 0-1. 공휴일/휴장일 체크 (데이터가 없거나 전체 거래량이 0인 경우)
+    if not all_items or sum(item['volume'] for item in all_items) == 0:
+        print(f"[-] 모니터링 건너뜀: 오늘은 시장이 열리지 않는 휴장일(공휴일)로 보입니다.")
+        return
+
     history_file = "notified_disclosures.json"
     history_data = {}
     
