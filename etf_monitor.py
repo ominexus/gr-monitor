@@ -8,7 +8,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # --- 설정 구간 ---
-DISCREPANCY_THRESHOLD = -3.0  # 개별 알림 기준 괴리율 (%)
+NORMAL_THRESHOLD = -3.0      # 평시 알림 기준 괴리율 (%)
+OPENING_THRESHOLD = -5.0     # 시초가 특별 감시 기준 괴리율 (%)
 MIN_VOLUME = 5000            # 최소 거래량 (유동성 보장)
 RETENTION_DAYS = 30          # 알림 기록 보관 기간 (일)
 # -----------------
@@ -45,7 +46,6 @@ def fetch_realtime_etf_data():
             
             discrepancy = round(((now_val - nav) / nav) * 100, 2)
             
-            # 모든 유효 거래량 종목 수집 (이후 필터링)
             if volume >= MIN_VOLUME:
                 results.append({
                     "name": name,
@@ -93,39 +93,43 @@ def main():
     all_items = fetch_realtime_etf_data()
     new_notified = False
 
-    # 1. 개별 실시간 알림 (-3.0% 이하)
+    # 1. 실시간 알림 로직 (시초가 모드 vs 일반 모드)
+    # 시초가 특별 감시 (09:00 ~ 09:10)
+    is_opening_session = (900 <= kst_time <= 910)
+    current_threshold = OPENING_THRESHOLD if is_opening_session else NORMAL_THRESHOLD
+    alert_prefix = "⚡ *[시초가 괴리율 폭탄 감지]*" if is_opening_session else "🚨 *[ETF 실시간 저평가 알림]*"
+
     for item in all_items:
         item_id = f"{item['name']}_{item['date']}"
-        if item['rate'] <= DISCREPANCY_THRESHOLD and item_id not in filtered_history:
+        # 해당 시간대의 기준(Threshold)에 따라 필터링
+        if item['rate'] <= current_threshold and item_id not in filtered_history:
             naver_link = f"https://m.stock.naver.com/domestic/stock/{item['code']}/total"
             msg = (
-                f"🚨 *[ETF 실시간 저평가 알림]*\n\n"
+                f"{alert_prefix}\n\n"
                 f"📌 *종목:* {item['name']} ({item['code']})\n"
-                f"📉 *괴리율:* `{item['rate']}%` (저평가)\n"
+                f"📉 *괴리율:* `{item['rate']}%` (심각한 저평가)\n"
                 f"💰 *현재가:* {item['price']:,}원\n"
                 f"📊 *거래량:* {item['volume']:,}주\n\n"
-                f"🔗 [네이버 증권 바로가기]({naver_link})"
+                f"🔗 [네이버 증권 바로가기]({naver_link})\n"
+                f"⚠️ 일시적 가격 왜곡일 가능성이 높습니다."
             )
             send_telegram(msg)
+            print(f"알림 발송: {item['name']} ({item['rate']}%)")
             filtered_history[item_id] = item['date']
             new_notified = True
 
-    # 2. 장 마감 요약 브리핑 (15:40 ~ 15:55 사이 실행 시)
+    # 2. 장 마감 요약 브리핑 (15:40 ~ 15:55)
     summary_id = f"SUMMARY_{today_str}"
     if 1540 <= kst_time <= 1555 and summary_id not in filtered_history:
-        # 괴리율이 낮은(가장 저평가된) 순으로 정렬
         sorted_items = sorted(all_items, key=lambda x: x['rate'])[:5]
-        
         if sorted_items:
             summary_msg = f"📝 *[장 마감 ETF 저평가 요약]*\n📅 {today_str}\n\n"
             for i, item in enumerate(sorted_items, 1):
                 summary_msg += f"{i}. *{item['name']}*\n    └ 괴리율: `{item['rate']}%` | 거래량: {item['volume']:,}주\n"
-            
             summary_msg += "\n*오늘 하루도 수고하셨습니다!*"
             send_telegram(summary_msg)
             filtered_history[summary_id] = today_str
             new_notified = True
-            print("장 마감 요약 브리핑 발송 완료.")
 
     if new_notified or len(history_data) != len(filtered_history):
         with open(history_file, "w", encoding="utf-8") as f:
