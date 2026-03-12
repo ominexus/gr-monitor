@@ -5,15 +5,15 @@ on:
     - cron: '*/10 * * * *'
   workflow_dispatch:
 
+# 모든 Job과 Step에 Node.js 24 강제 적용
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   run-monitor:
     runs-on: ubuntu-latest
-    # 저장소에 파일을 쓸 수 있는 권한 부여
     permissions:
       contents: write
-    
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
     - name: Checkout Repository
@@ -38,7 +38,6 @@ jobs:
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        # 변경사항이 있을 경우에만 커밋 및 푸시
         if [ -f notified_disclosures.json ]; then
           git add notified_disclosures.json
           git commit -m "Update notified disclosures list [skip ci]" || echo "No changes to commit"
