@@ -60,8 +60,8 @@ def main():
         # 고유 ID 생성 (종목명 + 날짜)
         item_id = f"{item['name']}_{item['date']}"
         
-        # 2. 중복 체크 및 마이너스 괴리율 필터링
-        if item_id not in notified_list and item['rate'] <= -1.0:
+        # 2. 중복 체크 및 마이너스 괴리율 필터링 (-3.0% 이하만)
+        if item_id not in notified_list and item['rate'] <= -3.0:
             msg = (
                 f"📉 *[ETF 마이너스 괴리율 알림]*\n\n"
                 f"📌 *종목명:* {item['name']}\n"
