@@ -39,15 +39,29 @@ def fetch_kind_etf_data():
     return mock_data
 
 def main():
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{now}] ETF 괴리율 모니터링 시작...")
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"[{now_str}] ETF 괴리율 모니터링 시작...")
     
+    # 1. 이미 알림을 보낸 목록 로드
+    history_file = "notified_disclosures.json"
+    if os.path.exists(history_file):
+        with open(history_file, "r", encoding="utf-8") as f:
+            try:
+                notified_list = json.load(f)
+            except:
+                notified_list = []
+    else:
+        notified_list = []
+
     items = fetch_kind_etf_data()
-    found_any = False
+    new_notified = False
 
     for item in items:
-        # 마이너스 괴리율만 필터링 (예: -1.0% 이하)
-        if item['rate'] <= -1.0:
+        # 고유 ID 생성 (종목명 + 날짜)
+        item_id = f"{item['name']}_{item['date']}"
+        
+        # 2. 중복 체크 및 마이너스 괴리율 필터링
+        if item_id not in notified_list and item['rate'] <= -1.0:
             msg = (
                 f"📉 *[ETF 마이너스 괴리율 알림]*\n\n"
                 f"📌 *종목명:* {item['name']}\n"
@@ -58,10 +72,17 @@ def main():
             )
             send_telegram(msg)
             print(f"알림 발송: {item['name']} ({item['rate']}%)")
-            found_any = True
+            
+            notified_list.append(item_id)
+            new_notified = True
     
-    if not found_any:
-        print("조건에 맞는 마이너스 괴리율 종목이 없습니다.")
+    # 3. 새로운 알림이 있었다면 기록 업데이트
+    if new_notified:
+        with open(history_file, "w", encoding="utf-8") as f:
+            json.dump(notified_list, f, ensure_ascii=False, indent=2)
+        print("기록 업데이트 완료.")
+    else:
+        print("새로운 마이너스 괴리율 종목이 없습니다.")
 
 if __name__ == "__main__":
     main()
