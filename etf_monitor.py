@@ -7,82 +7,102 @@ import json
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# --- 설정 구간 ---
+DISCREPANCY_THRESHOLD = -3.0  # 알림 기준 괴리율 (%)
+MIN_VOLUME = 5000            # 최소 거래량 (유동성 보장)
+# -----------------
+
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("에러: TELEGRAM_TOKEN 또는 CHAT_ID 환경 변수가 설정되지 않았습니다.")
+        print("에러: TELEGRAM_TOKEN 또는 CHAT_ID 설정이 필요합니다.")
         return
-    
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID, 
-        "text": message, 
-        "parse_mode": "Markdown"
-    }
+    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
+        requests.post(url, json=payload).raise_for_status()
     except Exception as e:
-        print(f"텔레그램 전송 중 에러 발생: {e}")
+        print(f"텔레그램 전송 에러: {e}")
 
-def fetch_kind_etf_data():
+def fetch_realtime_etf_data():
     """
-    KIND(한국거래소) 공시 데이터를 검색하는 로직 (기본 예시)
-    실제 운영 시에는 KIND의 검색 API 또는 크롤링을 통해 데이터를 수집합니다.
+    네이버 금융 실시간 ETF API에서 데이터를 가져옵니다.
     """
-    # 3월 실제 발생 사례 데이터 (테스트용)
-    # 실제 연동 시 requests를 사용하여 KIND 페이지의 JSON 데이터를 파싱하도록 고도화 가능합니다.
-    mock_data = [
-        {"name": "ACE 글로벌AI맞춤형반도체", "rate": -3.54, "date": "2026-03-09"},
-        {"name": "KIWOOM 글로벌AI반도체", "rate": -2.80, "date": "2026-03-09"},
-        {"name": "SOL 미국AI반도체칩메이커", "rate": -2.15, "date": "2026-03-12"}
-    ]
-    return mock_data
+    url = "https://finance.naver.com/api/sise/etfItemList.nhn"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        items = data.get("result", {}).get("etfItemList", [])
+        
+        results = []
+        today = datetime.now().strftime('%Y-%m-%d')
+        
+        for item in items:
+            name = item.get("itemname")
+            now_val = item.get("nowVal")    # 현재가
+            nav = item.get("nav")          # 순자산가치(iNAV)
+            volume = item.get("quant")     # 거래량
+            
+            if not nav or nav == 0: continue
+            
+            # 괴리율 계산: ((현재가 - iNAV) / iNAV) * 100
+            discrepancy = round(((now_val - nav) / nav) * 100, 2)
+            
+            # 3번 기능: 스마트 필터링 (거래량 및 괴리율 기준)
+            if discrepancy <= DISCREPANCY_THRESHOLD and volume >= MIN_VOLUME:
+                results.append({
+                    "name": name,
+                    "rate": discrepancy,
+                    "price": now_val,
+                    "nav": nav,
+                    "volume": volume,
+                    "date": today
+                })
+        return results
+    except Exception as e:
+        print(f"데이터 수집 에러: {e}")
+        return []
 
 def main():
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{now_str}] ETF 괴리율 모니터링 시작...")
+    print(f"[{now_str}] 실시간 ETF 모니터링 시작 (기준: {DISCREPANCY_THRESHOLD}%, 거래량: {MIN_VOLUME}주)")
     
-    # 1. 이미 알림을 보낸 목록 로드
+    # 알림 내역 로드 (중복 방지)
     history_file = "notified_disclosures.json"
+    notified_list = []
     if os.path.exists(history_file):
         with open(history_file, "r", encoding="utf-8") as f:
-            try:
-                notified_list = json.load(f)
-            except:
-                notified_list = []
-    else:
-        notified_list = []
+            try: notified_list = json.load(f)
+            except: notified_list = []
 
-    items = fetch_kind_etf_data()
+    items = fetch_realtime_etf_data()
     new_notified = False
 
     for item in items:
-        # 고유 ID 생성 (종목명 + 날짜)
+        # 알림 메시지 구성 (2번 기능 예고: 네이버 링크 포함)
         item_id = f"{item['name']}_{item['date']}"
         
-        # 2. 중복 체크 및 마이너스 괴리율 필터링 (-3.0% 이하만)
-        if item_id not in notified_list and item['rate'] <= -3.0:
+        if item_id not in notified_list:
             msg = (
-                f"📉 *[ETF 마이너스 괴리율 알림]*\n\n"
-                f"📌 *종목명:* {item['name']}\n"
-                f"📊 *괴리율:* `{item['rate']}%` (저평가)\n"
-                f"📅 *발생일:* {item['date']}\n\n"
-                f"⚠️ 실제 가치(iNAV)보다 저렴하게 거래 중입니다.\n"
-                f"현지 시장의 급등락을 확인하세요."
+                f"🚨 *[ETF 실시간 저평가 알림]*\n\n"
+                f"📌 *종목:* {item['name']}\n"
+                f"📉 *괴리율:* `{item['rate']}%` (저평가)\n"
+                f"💰 *현재가:* {item['price']:,}원\n"
+                f"💎 *iNAV:* {item['nav']:,}원\n"
+                f"📊 *거래량:* {item['volume']:,}주\n\n"
+                f"⚠️ 거래량이 동반된 확실한 저평가 상태입니다."
             )
             send_telegram(msg)
             print(f"알림 발송: {item['name']} ({item['rate']}%)")
-            
             notified_list.append(item_id)
             new_notified = True
     
-    # 3. 새로운 알림이 있었다면 기록 업데이트
     if new_notified:
+        # 최근 100개 알림만 유지하도록 관리 (파일 크기 조절)
         with open(history_file, "w", encoding="utf-8") as f:
-            json.dump(notified_list, f, ensure_ascii=False, indent=2)
+            json.dump(notified_list[-100:], f, ensure_ascii=False, indent=2)
         print("기록 업데이트 완료.")
     else:
-        print("새로운 마이너스 괴리율 종목이 없습니다.")
+        print("조건에 맞는 종목이 없습니다.")
 
 if __name__ == "__main__":
     main()
