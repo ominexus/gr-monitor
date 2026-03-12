@@ -2,10 +2,11 @@ name: ETF Discrepancy Monitor
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    # 한국 장(09:00~16:00) + 미국 장 시작(22:30~24:00) 통합 스케줄 (UTC 기준)
+    # 한국 09:00 = UTC 00:00 / 한국 22:30 = UTC 13:30
+    - cron: '*/10 0-7,13-15 * * *'
   workflow_dispatch:
 
-# 모든 Job과 Step에 Node.js 24 강제 적용
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -26,7 +27,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install requests
+        pip install requests yfinance
 
     - name: Run ETF Monitor Script
       env:
