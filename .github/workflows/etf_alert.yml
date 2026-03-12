@@ -11,6 +11,9 @@ jobs:
     # 저장소에 파일을 쓸 수 있는 권한 부여
     permissions:
       contents: write
+    
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
     - name: Checkout Repository
