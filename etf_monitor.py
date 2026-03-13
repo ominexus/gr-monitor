@@ -438,8 +438,8 @@ def main():
 
     if not all_items: return
 
-    # 괴리율 기준치를 넘는 모든 아이템을 시트에 기록하기 위해 수집
-    items_to_log = [itm for itm in all_items if itm['rate'] <= threshold]
+    # 괴리율 공시 기준(절대값 1.0% 이상)을 넘는 모든 아이템을 시트에 기록 (알림 임계값과 무관하게)
+    items_to_log = [itm for itm in all_items if abs(itm['rate']) >= 1.0]
     if items_to_log:
         log_to_google_sheets(items_to_log)
 
