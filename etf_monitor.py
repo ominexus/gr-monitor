@@ -71,6 +71,53 @@ OPENING_THRESHOLD = -5.0     # 한국 시초가 특별 감시 (%)
 US_CRASH_THRESHOLD = -10.0    # 미국 "역대급 폭탄" 감지 기준 (%)
 MIN_VOLUME = 5000            # 한국 ETF 최소 거래량
 RETENTION_DAYS = 30          # 기록 보관 기간
+BUY_UNIT_AMT = 100000        # 1회 매수 시 목표 금액 (10만 원)
+# -----------------
+
+def check_korean_holiday(token):
+    """오늘이 한국 시장 휴장일인지 확인합니다."""
+    if not token: return False
+    url = f"{KIS_URL_BASE}/uapi/domestic-stock/v1/quotations/chk-holiday"
+    headers = {
+        "content-type": "application/json",
+        "authorization": f"Bearer {token}",
+        "appkey": KIS_APP_KEY,
+        "appsecret": KIS_APP_SECRET,
+        "tr_id": "CTCA0903R",
+        "custtype": "P",
+    }
+    params = {"BASS_DT": datetime.now().strftime("%Y%m%d"), "CTX_AREA_NK": "", "CTX_AREA_FK": ""}
+    try:
+        res = requests.get(url, headers=headers, params=params).json()
+        if res.get('rt_cd') == '0':
+            return res.get('output', [{}])[0].get('opnd_yn') == 'N'
+        return False
+    except: return False
+
+def get_portfolio_profit(token):
+    """계좌 전체 수익률 현황 조회"""
+    url = f"{KIS_URL_BASE}/uapi/domestic-stock/v1/trading/inquire-balance"
+    is_mock = "openapivts" in KIS_URL_BASE
+    tr_id = "VTTC8434R" if is_mock else "TTTC8434R"
+    headers = {
+        "content-type": "application/json", "authorization": f"Bearer {token}",
+        "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": tr_id, "custtype": "P",
+    }
+    params = {
+        "CANO": KIS_CANO, "ACNT_PRDT_CD": KIS_PRDT_NO,
+        "AFHR_FLPR_YN": "N", "OVAL_DVSN": "01", "PRCS_DVSN": "01",
+        "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""
+    }
+    try:
+        res = requests.get(url, headers=headers, params=params).json()
+        if res.get('rt_cd') == '0':
+            summary = res.get('output2', [{}])[0]
+            total_val = summary.get('tot_evlu_amt', '0')
+            total_profit = summary.get('evlu_pfit_amt_smtl', '0')
+            total_rate = summary.get('evlu_pfit_rt', '0')
+            return f"💰 *[계좌 전체 수익 현황]*\n\n- 총 평가금액: `{int(float(total_val)):,}`원\n- 총 평가손익: `{int(float(total_profit)):,}`원\n- 현재 수익률: `{total_rate}%`"
+        return "[-] 수익률 조회 실패"
+    except Exception as e: return f"[-] 에러: {e}"
 
 # 🇺🇸 서학개미 TOP 30 감시 리스트
 US_WATCH_LIST = [
@@ -340,30 +387,24 @@ def handle_telegram_commands(token, kis_token):
     """텔레그램 명령어를 확인하고 응답합니다."""
     state_file = "bot_state.json"
     last_id = 0
-    
-    # 1시간 이상 지난 메시지는 재처리 방지를 위해 무시
     one_hour_ago = int((datetime.utcnow() - timedelta(hours=1)).timestamp())
 
-    # 1. 기존 상태 불러오기
     if os.path.exists(state_file):
         with open(state_file, "r") as f:
             try:
                 data = json.load(f)
                 last_id = data.get("last_update_id", 0)
-            except:
-                last_id = 0
+            except: last_id = 0
 
     url = f"https://api.telegram.org/bot{token}/getUpdates"
-    # last_id + 1 부터 가져오도록 offset 설정
     params = {"offset": last_id + 1, "timeout": 10}
     
     try:
-        response = requests.get(url, params=params)
-        res = response.json()
+        res = requests.get(url, params=params).json()
         if not res.get("ok"): return
         
         updates = res.get("result", [])
-        if not updates: return # 새로운 메시지가 없으면 종료
+        if not updates: return 
 
         new_last_id = last_id
         for update in updates:
@@ -371,12 +412,10 @@ def handle_telegram_commands(token, kis_token):
             text = msg.get("text", "")
             chat_id = msg.get("chat", {}).get("id")
             update_id = update.get("update_id")
-            msg_date = msg.get("date", 0) # 메시지 전송 시간 (Unix Timestamp)
+            msg_date = msg.get("date", 0)
             
-            # 마지막 처리 ID 업데이트 (성공/실패와 관계없이 확인한 것은 넘김)
             new_last_id = max(new_last_id, update_id)
 
-            # 권한 및 시간 확인 (오래된 메시지 무시)
             if str(chat_id) != str(CHAT_ID): continue
             if msg_date < one_hour_ago: continue 
             if not text: continue
@@ -394,31 +433,40 @@ def handle_telegram_commands(token, kis_token):
                     for h in holdings:
                         report += f"🔹 *{h['name']}* ({h['code']})\n    └ 수량: `{h['qty']}주` | 수익률: `{h['profit_rate']}%` \n"
                     send_telegram(report)
+
+            elif text.startswith("/수익") or text.startswith("/profit"):
+                report = get_portfolio_profit(kis_token)
+                send_telegram(report)
             
             elif text.startswith("/help") or text.startswith("/시작") or text.startswith("/start"):
-                send_telegram("🤖 *사용 가능한 명령어*\n\n/잔고 - 계좌 예수금 확인\n/보유 - 현재 보유 종목 및 수익률 확인")
+                send_telegram("🤖 *사용 가능한 명령어*\n\n/잔고 - 계좌 예수금 확인\n/보유 - 현재 보유 종목 확인\n/수익 - 전체 계좌 수익률 확인")
 
-        # 2. 마지막 처리한 ID 확실히 저장
         with open(state_file, "w") as f:
             json.dump({"last_update_id": new_last_id}, f)
-            print(f"[+] 텔레그램 명령어 처리 완료 (마지막 ID: {new_last_id})")
             
     except Exception as e:
         print(f"텔레그램 명령어 처리 에러: {e}")
 
 def main():
-    # 1. KIS 토큰 미리 받아오기 (명령어 처리 및 매매 공용)
+    # 1. KIS 토큰 받아오기
     kis_token = get_kis_access_token()
-
+    if not kis_token:
+        send_telegram("🚨 *[시스템 에러]*\n\nKIS API 토큰 발급에 실패했습니다. 키 설정을 확인해 주세요.")
+        return
+    
     # 2. 텔레그램 명령어 처리 (장 상태와 관계없이 실행)
-    if TELEGRAM_TOKEN and kis_token:
+    if TELEGRAM_TOKEN:
         handle_telegram_commands(TELEGRAM_TOKEN, kis_token)
 
+    # 3. 휴장일 체크 (KOR 시장 감시 시에만)
     market, kst_time = get_market_status()
+    if market == "KOR" and check_korean_holiday(kis_token):
+        print(f"[-] 오늘은 한국 시장 휴장일입니다. 감시를 중단합니다.")
+        return
+
     if market == "CLOSED":
         print(f"[-] 시장 마감: 명령어 확인 후 종료합니다.")
         return
-
 
     now = datetime.now()
     today_str = now.strftime('%Y-%m-%d')
@@ -441,19 +489,18 @@ def main():
 
     if not all_items: return
 
-    # 괴리율 공시 기준(절대값 1.0% 이상)을 넘는 모든 아이템을 시트에 기록 (알림 임계값과 무관하게)
+    # 괴리율 공시 기준(절대값 1.0% 이상)을 넘는 모든 아이템을 시트에 기록
     items_to_log = [itm for itm in all_items if abs(itm['rate']) >= 1.0]
     if items_to_log:
         log_to_google_sheets(items_to_log)
 
-    kis_token = None
-    if market == "KOR":
-        kis_token = get_kis_access_token()
-
     new_notified = False
     for item in all_items:
         item_id = f"{item['name']}_{item['date']}"
-        if item['rate'] <= threshold and item_id not in history_data:
+        
+        # 텔레그램 알림용 필터링 (거래량 및 임계값 기준)
+        is_high_volume = item.get('volume', 0) >= MIN_VOLUME
+        if item['rate'] <= threshold and item_id not in history_data and is_high_volume:
             link = f"https://m.stock.naver.com/domestic/stock/{item['code']}/total" if market == "KOR" else f"https://finance.yahoo.com/quote/{item['code']}"
             msg = (
                 f"{prefix}\n\n"
@@ -465,40 +512,35 @@ def main():
             )
             
             # KIS 자동매수 로직 (KOR 시장인 경우)
-            if market == "KOR" and kis_token:
-                # 1. 잔고 조회 (주문 가능 금액)
+            if market == "KOR":
+                # 금액 기준 수량 계산 (예: 10만 원 / 현재가)
+                qty = max(1, BUY_UNIT_AMT // item['price'])
+                
                 balance = get_kis_balance(kis_token)
                 
-                # 2. 잔고가 부족할 경우 "가장 수익 좋은 놈 팔기" 전략 실행
-                if balance < item['price']:
+                # 잔고 부족 시 교체 매매 전략
+                if balance < (item['price'] * qty):
                     holdings = get_kis_holdings(kis_token)
                     if holdings:
-                        # 수익률 기준 내림차순 정렬 (가장 수익 좋은 종목이 0번)
                         best_stock = sorted(holdings, key=lambda x: x['profit_rate'], reverse=True)[0]
-                        
                         sell_success, sell_msg = sell_order_kor(kis_token, best_stock['code'], best_stock['qty'])
                         if sell_success:
-                            msg += f"\n\n🔄 *자산 교체 실행*\n└ 매도: `{best_stock['name']}` (수익률: {best_stock['profit_rate']}%)\n└ 사유: `현금 확보 및 저평가 종목 교체`"
-                            # 매도 후 잔고 재조회
+                            msg += f"\n\n🔄 *자산 교체 실행*\n└ 매도: `{best_stock['name']}`\n└ 사유: `현금 확보 (단가: {item['price']:,}원 x {qty}주 매수용)`"
                             balance = get_kis_balance(kis_token)
                         else:
                             msg += f"\n\n❌ *자산 교체 실패*\n└ 사유: `{sell_msg}`"
-                    else:
-                        print(f"[-] {item['name']}: 잔고 및 보유 주식 없음. 매수 불가.")
-                        # 보유 주식이 아예 없는 경우에 대한 처리는 아래 최종 잔고 체크에서 수행됨
 
-                # 3. 최종 매수 시도
-                if balance >= item['price']:
-                    success, result_msg = place_order_kor(kis_token, item['code'], item['price'], qty=1)
+                # 최종 매수 시도
+                if balance >= (item['price'] * qty):
+                    success, result_msg = place_order_kor(kis_token, item['code'], item['price'], qty=qty)
                     if success:
-                        msg += f"\n\n✅ *자동매수 완료*\n└ 결과: `{result_msg}`"
+                        msg += f"\n\n✅ *자동매수 완료*\n└ 결과: `{qty}주 매수 성공 ({result_msg})`"
                     else:
                         msg += f"\n\n❌ *자동매수 실패*\n└ 사유: `{result_msg}`"
                 else:
-                    msg += f"\n\n⚠️ *자동매수 건너뜀*\n└ 사유: `최종 잔고 부족 (주문가능: {balance:,}원 / 필요: {item['price']:,}원)`"
+                    msg += f"\n\n⚠️ *자동매수 건너뜀*\n└ 사유: `최종 잔고 부족 (필요: {(item['price']*qty):,}원)`"
 
             send_telegram(msg)
-            print(f"알림 발송: {item['name']} ({item['rate']}%)")
             history_data[item_id] = item['date']
             new_notified = True
 
