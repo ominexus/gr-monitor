@@ -32,7 +32,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install requests yfinance
+        pip install requests yfinance google-auth google-api-python-client
 
     - name: Run ETF Monitor Script
       env:
@@ -43,6 +43,8 @@ jobs:
         KIS_CANO: ${{ secrets.KIS_CANO }}
         KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
         KIS_URL_BASE: ${{ secrets.KIS_URL_BASE }}
+        GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+        GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
       run: python etf_monitor.py
 
     - name: Commit and Push Changes

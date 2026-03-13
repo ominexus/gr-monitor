@@ -3,10 +3,60 @@ import requests
 from datetime import datetime, timedelta
 import json
 import yfinance as yf
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 # GitHub Secrets에서 환경 변수 불러오기
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+GOOGLE_SERVICE_ACCOUNT = os.getenv("GOOGLE_SERVICE_ACCOUNT") # JSON 스트링
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
+# -----------------
+
+def log_to_google_sheets(items):
+    """구글 시트에 데이터를 기록합니다. (중복 방지 적용)"""
+    if not GOOGLE_SERVICE_ACCOUNT or not GOOGLE_SHEET_ID:
+        print("[-] 구글 시트 설정(GOOGLE_SERVICE_ACCOUNT, GOOGLE_SHEET_ID)이 없습니다. 건너뜁니다.")
+        return
+
+    try:
+        # 서비스 계정 인증
+        info = json.loads(GOOGLE_SERVICE_ACCOUNT)
+        credentials = service_account.Credentials.from_service_account_info(info)
+        service = build('sheets', 'v4', credentials=credentials)
+        sheet = service.spreadsheets()
+
+        # 현재 시트 데이터 가져오기 (중복 체크용 ID 열 조회)
+        range_name = 'Sheet1!A:A'
+        result = sheet.values().get(spreadsheetId=GOOGLE_SHEET_ID, range=range_name).execute()
+        existing_ids = [row[0] for row in result.get('values', [])] if result.get('values') else []
+
+        new_rows = []
+        for item in items:
+            # 고유 ID 생성 (날짜_종목코드_시장)
+            item_id = f"{item['date']}_{item['code']}_{item['market']}"
+            if item_id not in existing_ids:
+                # [ID, 일시, 종목명, 코드, 시장, 괴리율, 가격, 거래량]
+                new_rows.append([
+                    item_id,
+                    datetime.now().strftime('%Y-%m-%d %H:%M'),
+                    item['name'],
+                    item['code'],
+                    item['market'],
+                    item['rate'],
+                    item['price'],
+                    item.get('volume', 0)
+                ])
+
+        if new_rows:
+            body = {'values': new_rows}
+            sheet.values().append(
+                spreadsheetId=GOOGLE_SHEET_ID, range='Sheet1!A1',
+                valueInputOption='RAW', insertDataOption='INSERT_ROWS', body=body
+            ).execute()
+            print(f"[+] 구글 시트 {len(new_rows)}건 기록 완료")
+    except Exception as e:
+        print(f"[-] 구글 시트 기록 에러: {e}")
 
 # --- KIS API 설정 ---
 KIS_APP_KEY = os.getenv("KIS_APPKEY")
@@ -387,6 +437,11 @@ def main():
         threshold = US_CRASH_THRESHOLD
 
     if not all_items: return
+
+    # 괴리율 기준치를 넘는 모든 아이템을 시트에 기록하기 위해 수집
+    items_to_log = [itm for itm in all_items if itm['rate'] <= threshold]
+    if items_to_log:
+        log_to_google_sheets(items_to_log)
 
     kis_token = None
     if market == "KOR":
