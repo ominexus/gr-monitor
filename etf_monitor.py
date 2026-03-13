@@ -406,6 +406,9 @@ def main():
                             balance = get_kis_balance(kis_token)
                         else:
                             msg += f"\n\n❌ *자산 교체 실패*\n└ 사유: `{sell_msg}`"
+                    else:
+                        print(f"[-] {item['name']}: 잔고 및 보유 주식 없음. 매수 불가.")
+                        # 보유 주식이 아예 없는 경우에 대한 처리는 아래 최종 잔고 체크에서 수행됨
 
                 # 3. 최종 매수 시도
                 if balance >= item['price']:
