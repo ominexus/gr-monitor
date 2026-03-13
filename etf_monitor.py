@@ -288,8 +288,11 @@ def fetch_realtime_etf_data():
             name, code, now_val, nav, volume = item.get("itemname"), item.get("itemcode"), item.get("nowVal"), item.get("nav"), item.get("quant")
             if not nav or nav == 0: continue
             discrepancy = round(((now_val - nav) / nav) * 100, 2)
-            if volume >= MIN_VOLUME:
-                results.append({"name": name, "code": code, "rate": discrepancy, "price": now_val, "nav": nav, "volume": volume, "date": today, "market": "KOR"})
+            results.append({
+                "name": name, "code": code, "rate": discrepancy, 
+                "price": now_val, "nav": nav, "volume": volume, 
+                "date": today, "market": "KOR"
+            })
         return results
     except: return []
 
