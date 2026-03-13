@@ -33,14 +33,21 @@ jobs:
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        KIS_APPKEY: ${{ secrets.KIS_APPKEY }}
+        KIS_SECRET: ${{ secrets.KIS_SECRET }}
+        KIS_CANO: ${{ secrets.KIS_CANO }}
+        KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
+        KIS_URL_BASE: ${{ secrets.KIS_URL_BASE }}
       run: python etf_monitor.py
 
     - name: Commit and Push Changes
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        if [ -f notified_disclosures.json ]; then
-          git add notified_disclosures.json
-          git commit -m "Update notified disclosures list [skip ci]" || echo "No changes to commit"
+        git add notified_disclosures.json bot_state.json || echo "No files to add"
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Update monitor history and bot state [skip ci]"
           git push
         fi
