@@ -287,34 +287,52 @@ def handle_telegram_commands(token, kis_token):
     """텔레그램 명령어를 확인하고 응답합니다."""
     state_file = "bot_state.json"
     last_id = 0
+    
+    # 1시간 이상 지난 메시지는 재처리 방지를 위해 무시
+    one_hour_ago = int((datetime.utcnow() - timedelta(hours=1)).timestamp())
+
+    # 1. 기존 상태 불러오기
     if os.path.exists(state_file):
         with open(state_file, "r") as f:
-            try: last_id = json.load(f).get("last_update_id", 0)
-            except: last_id = 0
+            try:
+                data = json.load(f)
+                last_id = data.get("last_update_id", 0)
+            except:
+                last_id = 0
 
     url = f"https://api.telegram.org/bot{token}/getUpdates"
-    params = {"offset": last_id + 1, "timeout": 5}
+    # last_id + 1 부터 가져오도록 offset 설정
+    params = {"offset": last_id + 1, "timeout": 10}
     
     try:
-        res = requests.get(url, params=params).json()
+        response = requests.get(url, params=params)
+        res = response.json()
         if not res.get("ok"): return
         
         updates = res.get("result", [])
+        if not updates: return # 새로운 메시지가 없으면 종료
+
+        new_last_id = last_id
         for update in updates:
             msg = update.get("message", {})
             text = msg.get("text", "")
             chat_id = msg.get("chat", {}).get("id")
             update_id = update.get("update_id")
-            last_id = max(last_id, update_id)
+            msg_date = msg.get("date", 0) # 메시지 전송 시간 (Unix Timestamp)
+            
+            # 마지막 처리 ID 업데이트 (성공/실패와 관계없이 확인한 것은 넘김)
+            new_last_id = max(new_last_id, update_id)
 
-            # 권한 확인 (설정된 CHAT_ID와 일치하는지)
+            # 권한 및 시간 확인 (오래된 메시지 무시)
             if str(chat_id) != str(CHAT_ID): continue
+            if msg_date < one_hour_ago: continue 
+            if not text: continue
 
-            if text == "/잔고" or text == "/balance":
+            if text.startswith("/잔고") or text.startswith("/balance"):
                 balance = get_kis_balance(kis_token)
                 send_telegram(f"💰 *[현재 잔고 리포트]*\n\n주문 가능 금액: `{balance:,}원`")
             
-            elif text == "/보유" or text == "/holdings":
+            elif text.startswith("/보유") or text.startswith("/holdings"):
                 holdings = get_kis_holdings(kis_token)
                 if not holdings:
                     send_telegram("📦 *[보유 종목 리포트]*\n\n현재 보유 중인 종목이 없습니다.")
@@ -324,12 +342,13 @@ def handle_telegram_commands(token, kis_token):
                         report += f"🔹 *{h['name']}* ({h['code']})\n    └ 수량: `{h['qty']}주` | 수익률: `{h['profit_rate']}%` \n"
                     send_telegram(report)
             
-            elif text == "/help" or text == "/시작":
+            elif text.startswith("/help") or text.startswith("/시작") or text.startswith("/start"):
                 send_telegram("🤖 *사용 가능한 명령어*\n\n/잔고 - 계좌 예수금 확인\n/보유 - 현재 보유 종목 및 수익률 확인")
 
-        # 마지막 처리한 ID 저장
+        # 2. 마지막 처리한 ID 확실히 저장
         with open(state_file, "w") as f:
-            json.dump({"last_update_id": last_id}, f)
+            json.dump({"last_update_id": new_last_id}, f)
+            print(f"[+] 텔레그램 명령어 처리 완료 (마지막 ID: {new_last_id})")
             
     except Exception as e:
         print(f"텔레그램 명령어 처리 에러: {e}")
