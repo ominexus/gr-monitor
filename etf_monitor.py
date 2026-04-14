@@ -27,7 +27,7 @@ def log_to_google_sheets(items):
         sheet = service.spreadsheets()
 
         # 현재 시트 데이터 가져오기 (중복 체크용 ID 열 조회)
-        range_name = 'Sheet1!A:A'
+        range_name = '시트1!A:A'
         result = sheet.values().get(spreadsheetId=GOOGLE_SHEET_ID, range=range_name).execute()
         existing_ids = [row[0] for row in result.get('values', [])] if result.get('values') else []
 
@@ -51,7 +51,7 @@ def log_to_google_sheets(items):
         if new_rows:
             body = {'values': new_rows}
             sheet.values().append(
-                spreadsheetId=GOOGLE_SHEET_ID, range='Sheet1!A1',
+                spreadsheetId=GOOGLE_SHEET_ID, range='시트1!A1',
                 valueInputOption='RAW', insertDataOption='INSERT_ROWS', body=body
             ).execute()
             print(f"[+] 구글 시트 {len(new_rows)}건 기록 완료")
@@ -71,7 +71,6 @@ OPENING_THRESHOLD = -5.0     # 한국 시초가 특별 감시 (%)
 US_CRASH_THRESHOLD = -10.0    # 미국 "역대급 폭탄" 감지 기준 (%)
 MIN_VOLUME = 5000            # 한국 ETF 최소 거래량
 RETENTION_DAYS = 30          # 기록 보관 기간
-BUY_UNIT_AMT = 100000        # 1회 매수 시 목표 금액 (10만 원)
 # -----------------
 
 def check_korean_holiday(token):
@@ -159,168 +158,6 @@ def get_kis_access_token():
     except Exception as e:
         print(f"KIS 토큰 발급 에러: {e}")
         return None
-
-def get_kis_balance(token):
-    """한국투자증권 주식 매수 가능 금액 조회"""
-    if not all([KIS_CANO, KIS_PRDT_NO, token]):
-        return 0
-        
-    url = f"{KIS_URL_BASE}/uapi/domestic-stock/v1/trading/inquire-psbl-order"
-    
-    # tr_id: 실전(TTTC8908R), 모의(VTTC8908R)
-    is_mock = "openapivts" in KIS_URL_BASE
-    tr_id = "VTTC8908R" if is_mock else "TTTC8908R"
-    
-    headers = {
-        "content-type": "application/json",
-        "authorization": f"Bearer {token}",
-        "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET,
-        "tr_id": tr_id,
-        "custtype": "P",
-    }
-    
-    params = {
-        "CANO": KIS_CANO,
-        "ACNT_PRDT_CD": KIS_PRDT_NO,
-        "PDNO": "005930", # 종목별 매수 가능 금액이 다를 수 있어 삼성전자(005930)를 기준으로 조회
-        "ORD_UNPR": "0",
-        "ORD_DVSN": "01", # 시장가 기준
-        "CMA_EVLU_AMT_ICLD_YN": "N",
-        "OVRS_ICLD_YN": "N"
-    }
-    
-    try:
-        res = requests.get(url, headers=headers, params=params)
-        res_data = res.json()
-        if res_data.get('rt_cd') == '0':
-            # nrcz_buy_amt: 주문 가능 현금 (예수금)
-            return int(res_data.get('output', {}).get('nrcz_buy_amt', 0))
-        else:
-            print(f"잔고 조회 실패: {res_data.get('msg1')}")
-            return 0
-    except Exception as e:
-        print(f"잔고 조회 에러: {e}")
-        return 0
-
-def get_kis_holdings(token):
-    """현재 보유 종목 및 수익률 조회"""
-    if not all([KIS_CANO, KIS_PRDT_NO, token]):
-        return []
-        
-    url = f"{KIS_URL_BASE}/uapi/domestic-stock/v1/trading/inquire-balance"
-    
-    is_mock = "openapivts" in KIS_URL_BASE
-    tr_id = "VTTC8434R" if is_mock else "TTTC8434R"
-    
-    headers = {
-        "content-type": "application/json",
-        "authorization": f"Bearer {token}",
-        "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET,
-        "tr_id": tr_id,
-        "custtype": "P",
-    }
-    
-    params = {
-        "CANO": KIS_CANO,
-        "ACNT_PRDT_CD": KIS_PRDT_NO,
-        "AFHR_FLPR_YN": "N",
-        "OVAL_DVSN": "01",
-        "PRCS_DVSN": "01",
-        "CTX_AREA_FK100": "",
-        "CTX_AREA_NK100": ""
-    }
-    
-    try:
-        res = requests.get(url, headers=headers, params=params)
-        res_data = res.json()
-        holdings = []
-        if res_data.get('rt_cd') == '0':
-            for stock in res_data.get('output1', []):
-                if int(stock['hldg_qty']) > 0:
-                    holdings.append({
-                        "code": stock['pdno'],
-                        "name": stock['prdt_name'],
-                        "qty": int(stock['hldg_qty']),
-                        "profit_rate": float(stock['evlu_pfit_rt'])
-                    })
-            return holdings
-        return []
-    except Exception as e:
-        print(f"보유 종목 조회 에러: {e}")
-        return []
-
-def sell_order_kor(token, code, qty):
-    """한국투자증권 주식 매도 주문 (시장가)"""
-    url = f"{KIS_URL_BASE}/uapi/domestic-stock/v1/trading/order-cash"
-    
-    is_mock = "openapivts" in KIS_URL_BASE
-    tr_id = "VTTC0801U" if is_mock else "TTTC0801U" # 0801U가 매도
-    
-    headers = {
-        "content-type": "application/json",
-        "authorization": f"Bearer {token}",
-        "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET,
-        "tr_id": tr_id,
-        "custtype": "P",
-    }
-    
-    body = {
-        "CANO": KIS_CANO,
-        "ACNT_PRDT_CD": KIS_PRDT_NO,
-        "PDNO": code,
-        "ORD_DVSN": "01",  # 01: 시장가
-        "ORD_QTY": str(qty),
-        "ORD_UNPR": "0",
-    }
-    
-    try:
-        res = requests.post(url, headers=headers, json=body)
-        return res.json().get('rt_cd') == '0', res.json().get('msg1')
-    except Exception as e:
-        return False, str(e)
-
-def place_order_kor(token, code, price, qty=1):
-    """한국투자증권 주식 매수 주문 (시장가)"""
-    if not all([KIS_CANO, KIS_PRDT_NO, token]):
-        return False, "계좌번호 또는 토큰 누락"
-
-    url = f"{KIS_URL_BASE}/uapi/domestic-stock/v1/trading/order-cash"
-
-    # 주소에 'vts'가 포함되어 있으면 모의투자 환경으로 판단
-    is_mock = "openapivts" in KIS_URL_BASE
-    tr_id = "VTTC0802U" if is_mock else "TTTC0802U"
-
-    headers = {
-        "content-type": "application/json",
-        "authorization": f"Bearer {token}",
-        "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET,
-        "tr_id": tr_id,
-        "custtype": "P",
-    }
-
-    body = {
-        "CANO": KIS_CANO,
-        "ACNT_PRDT_CD": KIS_PRDT_NO,
-        "PDNO": code,
-        "ORD_DVSN": "01",  # 01: 시장가 (체결 우선)
-        "ORD_QTY": str(qty),
-        "ORD_UNPR": "0",   # 시장가는 0으로 설정
-    }
-
-    try:
-        res = requests.post(url, headers=headers, json=body)
-        res_data = res.json()
-        if res_data.get('rt_cd') == '0':
-            return True, f"주문 성공 (번호: {res_data.get('output', {}).get('ODNO')})"
-        else:
-            return False, res_data.get('msg1', '알 수 없는 오류')
-    except Exception as e:
-        return False, str(e)
-
 
 def fetch_realtime_etf_data():
     """한국 ETF 데이터를 가져옵니다."""
