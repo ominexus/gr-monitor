@@ -257,26 +257,8 @@ def handle_telegram_commands(token, kis_token):
             if msg_date < one_hour_ago: continue 
             if not text: continue
 
-            if text.startswith("/잔고") or text.startswith("/balance"):
-                balance = get_kis_balance(kis_token)
-                send_telegram(f"💰 *[현재 잔고 리포트]*\n\n주문 가능 금액: `{balance:,}원`")
-            
-            elif text.startswith("/보유") or text.startswith("/holdings"):
-                holdings = get_kis_holdings(kis_token)
-                if not holdings:
-                    send_telegram("📦 *[보유 종목 리포트]*\n\n현재 보유 중인 종목이 없습니다.")
-                else:
-                    report = "📦 *[보유 종목 리포트]*\n\n"
-                    for h in holdings:
-                        report += f"🔹 *{h['name']}* ({h['code']})\n    └ 수량: `{h['qty']}주` | 수익률: `{h['profit_rate']}%` \n"
-                    send_telegram(report)
-
-            elif text.startswith("/수익") or text.startswith("/profit"):
-                report = get_portfolio_profit(kis_token)
-                send_telegram(report)
-            
-            elif text.startswith("/help") or text.startswith("/시작") or text.startswith("/start"):
-                send_telegram("🤖 *사용 가능한 명령어*\n\n/잔고 - 계좌 예수금 확인\n/보유 - 현재 보유 종목 확인\n/수익 - 전체 계좌 수익률 확인")
+            if text.startswith("/help") or text.startswith("/시작") or text.startswith("/start"):
+                send_telegram("🤖 *사용 가능한 명령어*\n\n/help - 도움말 확인")
 
         with open(state_file, "w") as f:
             json.dump({"last_update_id": new_last_id}, f)
@@ -348,35 +330,6 @@ def main():
                 f"⚠️ 평소보다 훨씬 큰 변동성이 감지되었습니다!"
             )
             
-            # KIS 자동매수 로직 (KOR 시장인 경우)
-            if market == "KOR":
-                # 금액 기준 수량 계산 (예: 10만 원 / 현재가)
-                qty = max(1, BUY_UNIT_AMT // item['price'])
-                
-                balance = get_kis_balance(kis_token)
-                
-                # 잔고 부족 시 교체 매매 전략
-                if balance < (item['price'] * qty):
-                    holdings = get_kis_holdings(kis_token)
-                    if holdings:
-                        best_stock = sorted(holdings, key=lambda x: x['profit_rate'], reverse=True)[0]
-                        sell_success, sell_msg = sell_order_kor(kis_token, best_stock['code'], best_stock['qty'])
-                        if sell_success:
-                            msg += f"\n\n🔄 *자산 교체 실행*\n└ 매도: `{best_stock['name']}`\n└ 사유: `현금 확보 (단가: {item['price']:,}원 x {qty}주 매수용)`"
-                            balance = get_kis_balance(kis_token)
-                        else:
-                            msg += f"\n\n❌ *자산 교체 실패*\n└ 사유: `{sell_msg}`"
-
-                # 최종 매수 시도
-                if balance >= (item['price'] * qty):
-                    success, result_msg = place_order_kor(kis_token, item['code'], item['price'], qty=qty)
-                    if success:
-                        msg += f"\n\n✅ *자동매수 완료*\n└ 결과: `{qty}주 매수 성공 ({result_msg})`"
-                    else:
-                        msg += f"\n\n❌ *자동매수 실패*\n└ 사유: `{result_msg}`"
-                else:
-                    msg += f"\n\n⚠️ *자동매수 건너뜀*\n└ 사유: `최종 잔고 부족 (필요: {(item['price']*qty):,}원)`"
-
             send_telegram(msg)
             history_data[item_id] = item['date']
             new_notified = True
