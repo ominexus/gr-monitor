@@ -38,11 +38,6 @@ jobs:
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        KIS_APPKEY: ${{ secrets.KIS_APPKEY }}
-        KIS_SECRET: ${{ secrets.KIS_SECRET }}
-        KIS_CANO: ${{ secrets.KIS_CANO }}
-        KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
-        KIS_URL_BASE: ${{ secrets.KIS_URL_BASE }}
         GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
       run: python etf_monitor.py
