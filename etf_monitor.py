@@ -58,13 +58,6 @@ def log_to_google_sheets(items):
     except Exception as e:
         print(f"[-] 구글 시트 기록 에러: {e}")
 
-# --- KIS API 설정 ---
-KIS_APP_KEY = os.getenv("KIS_APPKEY")
-KIS_APP_SECRET = os.getenv("KIS_SECRET")
-KIS_CANO = os.getenv("KIS_CANO")        # 계좌번호 앞 8자리
-KIS_PRDT_NO = os.getenv("KIS_ACNT_PRDT_CD", "01")  # 계좌번호 뒤 2자리 (보통 01)
-KIS_URL_BASE = os.getenv("KIS_URL_BASE", "https://openapi.koreainvestment.com:9443") # 실전투자
-
 # --- 설정 구간 ---
 NORMAL_THRESHOLD = -3.0      # 한국 평시 알림 기준 (%)
 OPENING_THRESHOLD = -5.0     # 한국 시초가 특별 감시 (%)
@@ -72,51 +65,6 @@ US_CRASH_THRESHOLD = -10.0    # 미국 "역대급 폭탄" 감지 기준 (%)
 MIN_VOLUME = 5000            # 한국 ETF 최소 거래량
 RETENTION_DAYS = 30          # 기록 보관 기간
 # -----------------
-
-def check_korean_holiday(token):
-    """오늘이 한국 시장 휴장일인지 확인합니다."""
-    if not token: return False
-    url = f"{KIS_URL_BASE}/uapi/domestic-stock/v1/quotations/chk-holiday"
-    headers = {
-        "content-type": "application/json",
-        "authorization": f"Bearer {token}",
-        "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET,
-        "tr_id": "CTCA0903R",
-        "custtype": "P",
-    }
-    params = {"BASS_DT": datetime.now().strftime("%Y%m%d"), "CTX_AREA_NK": "", "CTX_AREA_FK": ""}
-    try:
-        res = requests.get(url, headers=headers, params=params).json()
-        if res.get('rt_cd') == '0':
-            return res.get('output', [{}])[0].get('opnd_yn') == 'N'
-        return False
-    except: return False
-
-def get_portfolio_profit(token):
-    """계좌 전체 수익률 현황 조회"""
-    url = f"{KIS_URL_BASE}/uapi/domestic-stock/v1/trading/inquire-balance"
-    is_mock = "openapivts" in KIS_URL_BASE
-    tr_id = "VTTC8434R" if is_mock else "TTTC8434R"
-    headers = {
-        "content-type": "application/json", "authorization": f"Bearer {token}",
-        "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": tr_id, "custtype": "P",
-    }
-    params = {
-        "CANO": KIS_CANO, "ACNT_PRDT_CD": KIS_PRDT_NO,
-        "AFHR_FLPR_YN": "N", "OVAL_DVSN": "01", "PRCS_DVSN": "01",
-        "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""
-    }
-    try:
-        res = requests.get(url, headers=headers, params=params).json()
-        if res.get('rt_cd') == '0':
-            summary = res.get('output2', [{}])[0]
-            total_val = summary.get('tot_evlu_amt', '0')
-            total_profit = summary.get('evlu_pfit_amt_smtl', '0')
-            total_rate = summary.get('evlu_pfit_rt', '0')
-            return f"💰 *[계좌 전체 수익 현황]*\n\n- 총 평가금액: `{int(float(total_val)):,}`원\n- 총 평가손익: `{int(float(total_profit)):,}`원\n- 현재 수익률: `{total_rate}%`"
-        return "[-] 수익률 조회 실패"
-    except Exception as e: return f"[-] 에러: {e}"
 
 # 🇺🇸 서학개미 TOP 30 감시 리스트
 US_WATCH_LIST = [
@@ -139,25 +87,6 @@ def send_telegram(message):
         requests.post(url, json=payload).raise_for_status()
     except Exception as e:
         print(f"텔레그램 전송 에러: {e}")
-
-def get_kis_access_token():
-    if not all([KIS_APP_KEY, KIS_APP_SECRET]):
-        print("에러: KIS_APP_KEY, KIS_APP_SECRET 설정 필요")
-        return None
-    url = f"{KIS_URL_BASE}/oauth2/tokenP"
-    headers = {"content-type": "application/json"}
-    body = {
-        "grant_type": "client_credentials",
-        "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET
-    }
-    try:
-        res = requests.post(url, headers=headers, json=body)
-        res.raise_for_status()
-        return res.json().get("access_token")
-    except Exception as e:
-        print(f"KIS 토큰 발급 에러: {e}")
-        return None
 
 def fetch_realtime_etf_data():
     """한국 ETF 데이터를 가져옵니다."""
@@ -220,7 +149,7 @@ def get_market_status():
     if weekday <= 4 and (2230 <= now_time <= 2359): return "USA_OPEN", now_time
     return "CLOSED", now_time
 
-def handle_telegram_commands(token, kis_token):
+def handle_telegram_commands(token):
     """텔레그램 명령어를 확인하고 응답합니다."""
     state_file = "bot_state.json"
     last_id = 0
@@ -267,21 +196,12 @@ def handle_telegram_commands(token, kis_token):
         print(f"텔레그램 명령어 처리 에러: {e}")
 
 def main():
-    # 1. KIS 토큰 받아오기
-    kis_token = get_kis_access_token()
-    if not kis_token:
-        send_telegram("🚨 *[시스템 에러]*\n\nKIS API 토큰 발급에 실패했습니다. 키 설정을 확인해 주세요.")
-        return
-    
-    # 2. 텔레그램 명령어 처리 (장 상태와 관계없이 실행)
+    # 1. 텔레그램 명령어 처리 (장 상태와 관계없이 실행)
     if TELEGRAM_TOKEN:
-        handle_telegram_commands(TELEGRAM_TOKEN, kis_token)
+        handle_telegram_commands(TELEGRAM_TOKEN)
 
-    # 3. 휴장일 체크 (KOR 시장 감시 시에만)
+    # 2. 장 상태 확인
     market, kst_time = get_market_status()
-    if market == "KOR" and check_korean_holiday(kis_token):
-        print(f"[-] 오늘은 한국 시장 휴장일입니다. 감시를 중단합니다.")
-        return
 
     if market == "CLOSED":
         print(f"[-] 시장 마감: 명령어 확인 후 종료합니다.")
