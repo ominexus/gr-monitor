@@ -61,7 +61,9 @@ def log_to_google_sheets(items):
 # --- 설정 구간 ---
 NORMAL_THRESHOLD = -3.0      # 한국 평시 알림 기준 (%)
 OPENING_THRESHOLD = -5.0     # 한국 시초가 특별 감시 (%)
+BOOM_THRESHOLD = 3.0         # 한국 급등 알림 기준 (%)
 US_CRASH_THRESHOLD = -10.0    # 미국 "역대급 폭탄" 감지 기준 (%)
+US_BOOM_THRESHOLD = 10.0      # 미국 폭등 감지 기준 (%)
 MIN_VOLUME = 5000            # 한국 ETF 최소 거래량
 RETENTION_DAYS = 30          # 기록 보관 기간
 # -----------------
@@ -98,11 +100,11 @@ def fetch_realtime_etf_data():
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
         for item in items:
-            name, code, now_val, nav, volume = item.get("itemname"), item.get("itemcode"), item.get("nowVal"), item.get("nav"), item.get("quant")
+            name, code, now_val, nav, volume, change_rate = item.get("itemname"), item.get("itemcode"), item.get("nowVal"), item.get("nav"), item.get("quant"), item.get("changeRate")
             if not nav or nav == 0: continue
             discrepancy = round(((now_val - nav) / nav) * 100, 2)
             results.append({
-                "name": name, "code": code, "rate": discrepancy, 
+                "name": name, "code": code, "rate": discrepancy, "change_rate": change_rate,
                 "price": now_val, "nav": nav, "volume": volume, 
                 "date": today, "market": "KOR"
             })
@@ -110,10 +112,10 @@ def fetch_realtime_etf_data():
     except: return []
 
 def fetch_us_opening_data():
-    """미국 TOP 30 데이터를 가져와 -10% 이상 대폭락 종목을 찾습니다."""
+    """미국 TOP 30 데이터를 가져와 급변동(폭락/폭등) 종목을 찾습니다."""
     results = []
     today = datetime.now().strftime('%Y-%m-%d')
-    print(f"미국 TOP 30 정밀 감시 시작: (기준 {US_CRASH_THRESHOLD}%)")
+    print(f"미국 TOP 30 정밀 감시 시작: (기준 폭락 {US_CRASH_THRESHOLD}%, 폭등 {US_BOOM_THRESHOLD}%)")
     
     for symbol in US_WATCH_LIST:
         try:
@@ -127,8 +129,8 @@ def fetch_us_opening_data():
             
             change_rate = round(((current_price - prev_close) / prev_close) * 100, 2)
             
-            # -10% 이상의 기록적인 폭락/괴리 발생 시만 수집
-            if change_rate <= US_CRASH_THRESHOLD:
+            # 기록적인 폭락/폭등 발생 시 수집
+            if change_rate <= US_CRASH_THRESHOLD or change_rate >= US_BOOM_THRESHOLD:
                 results.append({
                     "name": symbol, "code": symbol, "rate": change_rate,
                     "price": current_price, "prev": prev_close,
@@ -228,8 +230,16 @@ def main():
 
     if not all_items: return
 
-    # 괴리율 공시 기준(절대값 1.0% 이상)을 넘는 모든 아이템을 시트에 기록
-    items_to_log = [itm for itm in all_items if abs(itm['rate']) >= 1.0]
+    # 괴리율 1.0% 이상 또는 급등 기준을 넘는 아이템을 시트에 기록
+    items_to_log = []
+    for itm in all_items:
+        if market == "KOR":
+            if abs(itm['rate']) >= 1.0 or abs(itm.get('change_rate', 0)) >= BOOM_THRESHOLD:
+                items_to_log.append(itm)
+        elif market == "USA_OPEN":
+            # 미국은 fetch 단계에서 이미 걸러져서 들어옴
+            items_to_log.append(itm)
+            
     if items_to_log:
         log_to_google_sheets(items_to_log)
 
@@ -238,14 +248,41 @@ def main():
         item_id = f"{item['name']}_{item['date']}"
         
         # 텔레그램 알림용 필터링 (거래량 및 임계값 기준)
-        is_high_volume = item.get('volume', 0) >= MIN_VOLUME
-        if item['rate'] <= threshold and item_id not in history_data and is_high_volume:
+        is_high_volume = item.get('volume', 0) >= MIN_VOLUME if market == "KOR" else True
+        
+        is_boom = False
+        is_crash = False
+        
+        if market == "KOR":
+            is_boom = item.get('change_rate', 0) >= BOOM_THRESHOLD or item['rate'] >= BOOM_THRESHOLD
+            is_crash = item['rate'] <= threshold
+        elif market == "USA_OPEN":
+            is_boom = item['rate'] >= US_BOOM_THRESHOLD
+            is_crash = item['rate'] <= US_CRASH_THRESHOLD
+
+        if (is_boom or is_crash) and item_id not in history_data and is_high_volume:
             link = f"https://m.stock.naver.com/domestic/stock/{item['code']}/total" if market == "KOR" else f"https://finance.yahoo.com/quote/{item['code']}"
+            
+            if is_boom:
+                current_prefix = "🚀 *[ETF 실시간 급등/고평가 알림]*" if market == "KOR" else "🚀 *[미국장 폭등 감지]*"
+                status_text = "비정상 급등/고평가" if market == "KOR" else "폭등"
+            else:
+                current_prefix = "🚨 *[ETF 실시간 저평가 알림]*" if market == "KOR" else "💣 *[미국장 역대급 폭탄 감지]*"
+                status_text = "비정상 급락/저평가" if market == "KOR" else "폭락"
+
             msg = (
-                f"{prefix}\n\n"
+                f"{current_prefix}\n\n"
                 f"📌 *종목:* {item['name']} ({item['code']})\n"
-                f"📉 *변동률/괴리율:* `{item['rate']}%` (비정상 급락)\n"
-                f"💰 *현재가:* {item['price']:,}원 (USD)\n"
+            )
+            
+            if market == "KOR":
+                msg += f"📈 *등락률:* `{item.get('change_rate', 0)}%` | 📉 *괴리율:* `{item['rate']}%` ({status_text})\n"
+                msg += f"💰 *현재가:* {item['price']:,}원\n"
+            else:
+                msg += f"📉 *변동률:* `{item['rate']}%` ({status_text})\n"
+                msg += f"💰 *현재가:* {item['price']:,} USD\n"
+                
+            msg += (
                 f"🔗 [상세 페이지 바로가기]({link})\n"
                 f"⚠️ 평소보다 훨씬 큰 변동성이 감지되었습니다!"
             )
