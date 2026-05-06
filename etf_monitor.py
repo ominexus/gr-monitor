@@ -199,8 +199,10 @@ def send_hourly_summary(current_hour: int) -> None:
         top_items = sorted_items[:5]
         
         for itm in top_items:
-            price_unit = "원" if "KOR" in key else " USD"
-            summary_msg += f"• {itm['name']}: `{itm['rate']}%` ({itm['price']:,}{price_unit})\n"
+            if "KOR" in key:
+                summary_msg += f"• {itm['name']}: `{itm['rate']}%` ({itm['price']:,}원)\n"
+            else:
+                summary_msg += f"• {itm['name']}: `{itm['rate']}%` ({itm['price']:,.2f} USD)\n"
         
         if len(items) > 5:
             summary_msg += f"  ...외 {len(items) - 5}건\n"
@@ -390,35 +392,18 @@ def main() -> None:
             is_crash = item['rate'] <= US_CRASH_THRESHOLD
 
         if (is_boom or is_crash) and item_id not in history_data and is_high_volume:
-            link = f"https://m.stock.naver.com/domestic/stock/{item['code']}/total" if market == "KOR" else f"https://finance.yahoo.com/quote/{item['code']}"
-            
-            if is_boom:
-                current_prefix = "🚀 *[ETF 실시간 급등/고평가 알림]*" if market == "KOR" else "🚀 *[미국장 폭등 감지]*"
-                status_text = "비정상 급등/고평가" if market == "KOR" else "폭등"
-            else:
-                current_prefix = "🚨 *[ETF 실시간 저평가 알림]*" if market == "KOR" else "💣 *[미국장 역대급 폭탄 감지]*"
-                status_text = "비정상 급락/저평가" if market == "KOR" else "폭락"
-
-            msg = (
-                f"{current_prefix}\n\n"
-                f"📌 *종목:* {item['name']} ({item['code']})\n"
-            )
-            
-            if market == "KOR":
-                msg += f"📈 *등락률:* `{item.get('change_rate', 0)}%` | 📉 *괴리율:* `{item['rate']}%` ({status_text})\n"
-                msg += f"💰 *현재가:* {item['price']:,}원\n"
-            else:
-                msg += f"📉 *변동률:* `{item['rate']}%` ({status_text})\n"
-                msg += f"💰 *현재가:* {item['price']:,} USD\n"
-                
-            msg += (
-                f"🔗 [상세 페이지 바로가기]({link})\n"
-                f"⚠️ 평소보다 훨씬 큰 변동성이 감지되었습니다!"
-            )
-            
-            send_telegram(msg)
+            add_to_pending_queue(item)
             history_data[item_id] = item['date']
             new_notified = True
+
+    # 시간 변경 감지 및 요약 발송 로직 추가
+    current_hour = now.hour
+    last_summary_hour = history_data.get("last_summary_hour", -1)
+
+    if current_hour != last_summary_hour:
+        send_hourly_summary(current_hour)
+        history_data["last_summary_hour"] = current_hour
+        new_notified = True
 
     # 한국 장 마감 요약
     if market == "KOR" and 1540 <= kst_time <= 1555 and f"SUMMARY_{today_str}" not in history_data:
