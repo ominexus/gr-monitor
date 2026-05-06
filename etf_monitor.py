@@ -157,6 +157,60 @@ def get_pending_queue() -> List[Dict[str, Any]]:
         
     return queue
 
+def send_hourly_summary(current_hour: int) -> None:
+    """대기열에 쌓인 데이터를 통합하여 발송합니다."""
+    queue = get_pending_queue()
+    if not queue:
+        return
+
+    # 시장별/유형별 그룹화
+    categories: Dict[str, List[Dict[str, Any]]] = {
+        "KOR_BOOM": [], "KOR_CRASH": [],
+        "USA_BOOM": [], "USA_CRASH": []
+    }
+    
+    for item in queue:
+        m = item.get("market", "KOR")
+        # 기존 로직 기반 유형 판단
+        is_boom = False
+        if m == "KOR":
+            is_boom = item.get('change_rate', 0) >= BOOM_THRESHOLD or item['rate'] >= BOOM_THRESHOLD
+        else:
+            is_boom = item['rate'] >= US_BOOM_THRESHOLD
+            
+        cat_key = f"{m}_{'BOOM' if is_boom else 'CRASH'}"
+        if cat_key in categories:
+            categories[cat_key].append(item)
+
+    summary_msg = f"🕒 *[시간별 변동성 통합 요약 - {current_hour}시]*\n\n"
+    has_content = False
+
+    for key, items in categories.items():
+        if not items: continue
+        has_content = True
+        
+        market_label = "🇰🇷 한국 ETF" if "KOR" in key else "🇺🇸 미국 주식"
+        type_label = "🚀 급등/고평가" if "BOOM" in key else "🚨 급락/저평가"
+        
+        summary_msg += f"*{market_label} {type_label} ({len(items)}건)*\n"
+        
+        # 변동폭 기준 정렬 (절대값 큰 순)
+        sorted_items = sorted(items, key=lambda x: abs(x['rate']), reverse=True)
+        top_items = sorted_items[:5]
+        
+        for itm in top_items:
+            price_unit = "원" if "KOR" in key else " USD"
+            summary_msg += f"• {itm['name']}: `{itm['rate']}%` ({itm['price']:,}{price_unit})\n"
+        
+        if len(items) > 5:
+            summary_msg += f"  ...외 {len(items) - 5}건\n"
+        summary_msg += "\n"
+
+    if has_content:
+        if GOOGLE_SHEET_ID:
+            summary_msg += f"🔗 [상세 데이터(구글 시트) 확인](https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID})"
+        send_telegram(summary_msg)
+
 def fetch_realtime_etf_data() -> List[Dict[str, Any]]:
     """한국 ETF 데이터를 가져옵니다."""
     url = "https://finance.naver.com/api/sise/etfItemList.nhn"
