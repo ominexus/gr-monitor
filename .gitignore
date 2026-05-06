@@ -1,0 +1,7 @@
+.worktrees/
+__pycache__/
+*.pyc
+.env
+notified_disclosures.json
+bot_state.json
+pending_alerts.json
