@@ -30,7 +30,7 @@ def atomic_write_json(file_path: str, data: Any) -> None:
             os.remove(temp_path)
         raise
 
-def log_to_google_sheets(items):
+def log_to_google_sheets(items: List[Dict[str, Any]]) -> None:
     """구글 시트에 데이터를 기록합니다. (중복 방지 적용)"""
     if not GOOGLE_SERVICE_ACCOUNT or not GOOGLE_SHEET_ID:
         print("[-] 구글 시트 설정(GOOGLE_SERVICE_ACCOUNT, GOOGLE_SHEET_ID)이 없습니다. 건너뜁니다.")
@@ -98,14 +98,14 @@ US_WATCH_LIST = [
 PENDING_ALERTS_FILE = "pending_alerts.json"
 # -----------------
 
-def send_telegram(message):
+def send_telegram(message: str) -> None:
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("에러: TELEGRAM_TOKEN 또는 CHAT_ID 설정 필요")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True}
     try:
-        requests.post(url, json=payload).raise_for_status()
+        requests.post(url, json=payload, timeout=10).raise_for_status()
     except Exception as e:
         print(f"텔레그램 전송 에러: {e}")
 
@@ -221,24 +221,25 @@ def get_market_status() -> Tuple[str, int]:
     if weekday <= 4 and (2230 <= now_time <= 2359): return "USA_OPEN", now_time
     return "CLOSED", now_time
 
-def handle_telegram_commands(token):
+def handle_telegram_commands(token: str) -> None:
     """텔레그램 명령어를 확인하고 응답합니다."""
     state_file = "bot_state.json"
     last_id = 0
     one_hour_ago = int((datetime.utcnow() - timedelta(hours=1)).timestamp())
 
     if os.path.exists(state_file):
-        with open(state_file, "r") as f:
-            try:
+        try:
+            with open(state_file, "r") as f:
                 data = json.load(f)
                 last_id = data.get("last_update_id", 0)
-            except: last_id = 0
+        except (json.JSONDecodeError, FileNotFoundError, PermissionError):
+            last_id = 0
 
     url = f"https://api.telegram.org/bot{token}/getUpdates"
     params = {"offset": last_id + 1, "timeout": 10}
     
     try:
-        res = requests.get(url, params=params).json()
+        res = requests.get(url, params=params, timeout=15).json()
         if not res.get("ok"): return
         
         updates = res.get("result", [])
@@ -261,13 +262,15 @@ def handle_telegram_commands(token):
             if text.startswith("/help") or text.startswith("/시작") or text.startswith("/start"):
                 send_telegram("🤖 *사용 가능한 명령어*\n\n/help - 도움말 확인")
 
-        with open(state_file, "w") as f:
-            json.dump({"last_update_id": new_last_id}, f)
+        try:
+            atomic_write_json(state_file, {"last_update_id": new_last_id})
+        except Exception as e:
+            print(f"[-] 봇 상태 파일 쓰기 에러: {e}")
             
     except Exception as e:
         print(f"텔레그램 명령어 처리 에러: {e}")
 
-def main():
+def main() -> None:
     # 1. 텔레그램 명령어 처리 (장 상태와 관계없이 실행)
     if TELEGRAM_TOKEN:
         handle_telegram_commands(TELEGRAM_TOKEN)
@@ -282,13 +285,15 @@ def main():
     now = datetime.now()
     today_str = now.strftime('%Y-%m-%d')
     history_file = "notified_disclosures.json"
-    history_data = {}
+    history_data: Dict[str, str] = {}
     if os.path.exists(history_file):
-        with open(history_file, "r", encoding="utf-8") as f:
-            try: history_data = json.load(f)
-            except: history_data = {}
+        try:
+            with open(history_file, "r", encoding="utf-8") as f:
+                history_data = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError, PermissionError):
+            history_data = {}
 
-    all_items = []
+    all_items: List[Dict[str, Any]] = []
     if market == "KOR":
         all_items = fetch_realtime_etf_data()
         prefix = "🚨 *[ETF 실시간 저평가 알림]*"
@@ -301,7 +306,7 @@ def main():
     if not all_items: return
 
     # 괴리율 1.0% 이상 또는 급등 기준을 넘는 아이템을 시트에 기록
-    items_to_log = []
+    items_to_log: List[Dict[str, Any]] = []
     for itm in all_items:
         if market == "KOR":
             if abs(itm['rate']) >= 1.0 or abs(itm.get('change_rate', 0)) >= BOOM_THRESHOLD:
@@ -373,8 +378,10 @@ def main():
             new_notified = True
 
     if new_notified:
-        with open(history_file, "w", encoding="utf-8") as f:
-            json.dump(history_data, f, ensure_ascii=False, indent=2)
+        try:
+            atomic_write_json(history_file, history_data)
+        except Exception as e:
+            print(f"[-] 히스토리 파일 쓰기 에러: {e}")
 
 if __name__ == "__main__":
     main()
