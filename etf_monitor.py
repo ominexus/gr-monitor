@@ -5,6 +5,8 @@ import json
 import yfinance as yf
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+import tempfile
+from typing import List, Tuple, Dict, Any, Optional
 
 # GitHub Secrets에서 환경 변수 불러오기
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -12,6 +14,21 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GOOGLE_SERVICE_ACCOUNT = os.getenv("GOOGLE_SERVICE_ACCOUNT") # JSON 스트링
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 # -----------------
+
+def atomic_write_json(file_path: str, data: Any) -> None:
+    """Writes JSON data to a file atomically using a temporary file."""
+    dir_name = os.path.dirname(file_path)
+    if not dir_name:
+        dir_name = "."
+    fd, temp_path = tempfile.mkstemp(dir=dir_name, text=True)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(temp_path, file_path)
+    except Exception:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise
 
 def log_to_google_sheets(items):
     """구글 시트에 데이터를 기록합니다. (중복 방지 적용)"""
