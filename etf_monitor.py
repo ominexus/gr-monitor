@@ -98,16 +98,18 @@ US_WATCH_LIST = [
 PENDING_ALERTS_FILE = "pending_alerts.json"
 # -----------------
 
-def send_telegram(message: str) -> None:
+def send_telegram(message: str) -> bool:
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("에러: TELEGRAM_TOKEN 또는 CHAT_ID 설정 필요")
-        return
+        return False
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True}
     try:
         requests.post(url, json=payload, timeout=10).raise_for_status()
+        return True
     except Exception as e:
         print(f"텔레그램 전송 에러: {e}")
+        return False
 
 def add_to_pending_queue(item: Dict[str, Any]) -> None:
     """트리거된 종목을 대기열 파일에 추가합니다."""
@@ -138,7 +140,7 @@ def add_to_pending_queue(item: Dict[str, Any]) -> None:
             print(f"[-] 대기열 파일 쓰기 에러: {e}")
 
 def get_pending_queue() -> List[Dict[str, Any]]:
-    """대기열 데이터를 가져오고 파일을 비웁니다."""
+    """대기열 데이터를 가져옵니다."""
     if not os.path.exists(PENDING_ALERTS_FILE):
         return []
     
@@ -148,20 +150,21 @@ def get_pending_queue() -> List[Dict[str, Any]]:
             queue = json.load(f)
     except (json.JSONDecodeError, FileNotFoundError, PermissionError):
         queue = []
-    
-    # 발송 준비를 위해 파일 초기화
+        
+    return queue
+
+def clear_pending_queue() -> None:
+    """대기열 파일을 비웁니다."""
     try:
         atomic_write_json(PENDING_ALERTS_FILE, [])
     except Exception as e:
         print(f"[-] 대기열 파일 초기화 에러: {e}")
-        
-    return queue
 
-def send_hourly_summary(current_hour: int) -> None:
+def send_hourly_summary(current_hour: int) -> bool:
     """대기열에 쌓인 데이터를 통합하여 발송합니다."""
     queue = get_pending_queue()
     if not queue:
-        return
+        return True # 처리할 게 없으면 성공으로 간주 (시간 업데이트를 위해)
 
     # 시장별/유형별 그룹화
     categories: Dict[str, List[Dict[str, Any]]] = {
@@ -211,7 +214,14 @@ def send_hourly_summary(current_hour: int) -> None:
     if has_content:
         if GOOGLE_SHEET_ID:
             summary_msg += f"🔗 [상세 데이터(구글 시트) 확인](https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID})"
-        send_telegram(summary_msg)
+        
+        if send_telegram(summary_msg):
+            clear_pending_queue()
+            return True
+        else:
+            return False
+    
+    return True
 
 def fetch_realtime_etf_data() -> List[Dict[str, Any]]:
     """한국 ETF 데이터를 가져옵니다."""
@@ -277,31 +287,23 @@ def get_market_status() -> Tuple[str, int]:
     if weekday <= 4 and (2230 <= now_time <= 2359): return "USA_OPEN", now_time
     return "CLOSED", now_time
 
-def handle_telegram_commands(token: str) -> None:
+def handle_telegram_commands(token: str, state: Dict[str, Any]) -> bool:
     """텔레그램 명령어를 확인하고 응답합니다."""
-    state_file = "bot_state.json"
-    last_id = 0
+    last_id = state.get("last_update_id", 0)
     one_hour_ago = int((datetime.utcnow() - timedelta(hours=1)).timestamp())
-
-    if os.path.exists(state_file):
-        try:
-            with open(state_file, "r") as f:
-                data = json.load(f)
-                last_id = data.get("last_update_id", 0)
-        except (json.JSONDecodeError, FileNotFoundError, PermissionError):
-            last_id = 0
 
     url = f"https://api.telegram.org/bot{token}/getUpdates"
     params = {"offset": last_id + 1, "timeout": 10}
     
     try:
         res = requests.get(url, params=params, timeout=15).json()
-        if not res.get("ok"): return
+        if not res.get("ok"): return False
         
         updates = res.get("result", [])
-        if not updates: return 
+        if not updates: return False
 
         new_last_id = last_id
+        changed = False
         for update in updates:
             msg = update.get("message", {})
             text = msg.get("text", "")
@@ -317,31 +319,52 @@ def handle_telegram_commands(token: str) -> None:
 
             if text.startswith("/help") or text.startswith("/시작") or text.startswith("/start"):
                 send_telegram("🤖 *사용 가능한 명령어*\n\n/help - 도움말 확인")
+                changed = True
 
-        try:
-            atomic_write_json(state_file, {"last_update_id": new_last_id})
-        except Exception as e:
-            print(f"[-] 봇 상태 파일 쓰기 에러: {e}")
+        if new_last_id != last_id:
+            state["last_update_id"] = new_last_id
+            changed = True
+            
+        return changed
             
     except Exception as e:
         print(f"텔레그램 명령어 처리 에러: {e}")
+        return False
 
 def main() -> None:
+    # 0. 상태 파일 로드
+    state_file = "bot_state.json"
+    bot_state: Dict[str, Any] = {}
+    if os.path.exists(state_file):
+        try:
+            with open(state_file, "r") as f:
+                bot_state = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError, PermissionError):
+            bot_state = {}
+    
+    state_changed = False
+
     # 1. 텔레그램 명령어 처리 (장 상태와 관계없이 실행)
     if TELEGRAM_TOKEN:
-        handle_telegram_commands(TELEGRAM_TOKEN)
+        if handle_telegram_commands(TELEGRAM_TOKEN, bot_state):
+            state_changed = True
 
     # 2. 장 상태 확인
     market, kst_time = get_market_status()
 
     if market == "CLOSED":
+        if state_changed:
+            try:
+                atomic_write_json(state_file, bot_state)
+            except Exception as e:
+                print(f"[-] 봇 상태 파일 쓰기 에러: {e}")
         print(f"[-] 시장 마감: 명령어 확인 후 종료합니다.")
         return
 
     now = datetime.now()
     today_str = now.strftime('%Y-%m-%d')
     history_file = "notified_disclosures.json"
-    history_data: Dict[str, str] = {}
+    history_data: Dict[str, Any] = {}
     if os.path.exists(history_file):
         try:
             with open(history_file, "r", encoding="utf-8") as f:
@@ -359,7 +382,13 @@ def main() -> None:
         prefix = "💣 *[미국장 역대급 폭탄 감지]*"
         threshold = US_CRASH_THRESHOLD
 
-    if not all_items: return
+    if not all_items:
+        if state_changed:
+            try:
+                atomic_write_json(state_file, bot_state)
+            except Exception as e:
+                print(f"[-] 봇 상태 파일 쓰기 에러: {e}")
+        return
 
     # 괴리율 1.0% 이상 또는 급등 기준을 넘는 아이템을 시트에 기록
     items_to_log: List[Dict[str, Any]] = []
@@ -374,7 +403,7 @@ def main() -> None:
     if items_to_log:
         log_to_google_sheets(items_to_log)
 
-    new_notified = False
+    history_changed = False
     for item in all_items:
         item_id = f"{item['name']}_{item['date']}"
         
@@ -394,16 +423,16 @@ def main() -> None:
         if (is_boom or is_crash) and item_id not in history_data and is_high_volume:
             add_to_pending_queue(item)
             history_data[item_id] = item['date']
-            new_notified = True
+            history_changed = True
 
     # 시간 변경 감지 및 요약 발송 로직 추가
     current_hour = now.hour
-    last_summary_hour = history_data.get("last_summary_hour", -1)
+    last_summary_hour = bot_state.get("last_summary_hour", -1)
 
     if current_hour != last_summary_hour:
-        send_hourly_summary(current_hour)
-        history_data["last_summary_hour"] = current_hour
-        new_notified = True
+        if send_hourly_summary(current_hour):
+            bot_state["last_summary_hour"] = current_hour
+            state_changed = True
 
     # 한국 장 마감 요약
     if market == "KOR" and 1540 <= kst_time <= 1555 and f"SUMMARY_{today_str}" not in history_data:
@@ -412,15 +441,21 @@ def main() -> None:
             summary_msg = f"📝 *[장 마감 ETF 저평가 요약]*\n📅 {today_str}\n\n"
             for i, itm in enumerate(sorted_items, 1):
                 summary_msg += f"{i}. *{itm['name']}*\n    └ 괴리율: `{itm['rate']}%` | 거래량: {itm['volume']:,}주\n"
-            send_telegram(summary_msg)
-            history_data[f"SUMMARY_{today_str}"] = today_str
-            new_notified = True
+            if send_telegram(summary_msg):
+                history_data[f"SUMMARY_{today_str}"] = today_str
+                history_changed = True
 
-    if new_notified:
+    if history_changed:
         try:
             atomic_write_json(history_file, history_data)
         except Exception as e:
             print(f"[-] 히스토리 파일 쓰기 에러: {e}")
+            
+    if state_changed:
+        try:
+            atomic_write_json(state_file, bot_state)
+        except Exception as e:
+            print(f"[-] 봇 상태 파일 쓰기 에러: {e}")
 
 if __name__ == "__main__":
     main()
