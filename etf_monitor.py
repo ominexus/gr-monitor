@@ -78,6 +78,8 @@ US_WATCH_LIST = [
     "TMF", "BITO", "LLY", "SMH", "ARKK"
 ]
 # -----------------
+PENDING_ALERTS_FILE = "pending_alerts.json"
+# -----------------
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not CHAT_ID:
@@ -89,6 +91,34 @@ def send_telegram(message):
         requests.post(url, json=payload).raise_for_status()
     except Exception as e:
         print(f"텔레그램 전송 에러: {e}")
+
+def add_to_pending_queue(item):
+    """트리거된 종목을 대기열 파일에 추가합니다."""
+    queue = []
+    if os.path.exists(PENDING_ALERTS_FILE):
+        with open(PENDING_ALERTS_FILE, "r", encoding="utf-8") as f:
+            try: queue = json.load(f)
+            except: queue = []
+    
+    # 중복 방지 (이름과 날짜/시간 기준)
+    item_id = f"{item['name']}_{item['date']}_{datetime.now().hour}"
+    if not any(f"{i['name']}_{i['date']}_{datetime.now().hour}" == item_id for i in queue):
+        queue.append(item)
+        with open(PENDING_ALERTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(queue, f, ensure_ascii=False, indent=2)
+
+def get_pending_queue():
+    """대기열 데이터를 가져오고 파일을 비웁니다."""
+    if not os.path.exists(PENDING_ALERTS_FILE):
+        return []
+    with open(PENDING_ALERTS_FILE, "r", encoding="utf-8") as f:
+        try: queue = json.load(f)
+        except: queue = []
+    
+    # 발송 준비를 위해 파일 초기화
+    with open(PENDING_ALERTS_FILE, "w", encoding="utf-8") as f:
+        json.dump([], f)
+    return queue
 
 def fetch_realtime_etf_data():
     """한국 ETF 데이터를 가져옵니다."""
