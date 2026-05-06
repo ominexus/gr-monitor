@@ -157,14 +157,15 @@ def get_pending_queue() -> List[Dict[str, Any]]:
         
     return queue
 
-def fetch_realtime_etf_data():
+def fetch_realtime_etf_data() -> List[Dict[str, Any]]:
     """한국 ETF 데이터를 가져옵니다."""
     url = "https://finance.naver.com/api/sise/etfItemList.nhn"
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
         data = response.json()
         items = data.get("result", {}).get("etfItemList", [])
-        results = []
+        results: List[Dict[str, Any]] = []
         today = datetime.now().strftime('%Y-%m-%d')
         for item in items:
             name, code, now_val, nav, volume, change_rate = item.get("itemname"), item.get("itemcode"), item.get("nowVal"), item.get("nav"), item.get("quant"), item.get("changeRate")
@@ -176,11 +177,13 @@ def fetch_realtime_etf_data():
                 "date": today, "market": "KOR"
             })
         return results
-    except: return []
+    except Exception as e:
+        print(f"[-] 한국 ETF 데이터 가져오기 실패: {e}")
+        return []
 
-def fetch_us_opening_data():
+def fetch_us_opening_data() -> List[Dict[str, Any]]:
     """미국 TOP 30 데이터를 가져와 급변동(폭락/폭등) 종목을 찾습니다."""
-    results = []
+    results: List[Dict[str, Any]] = []
     today = datetime.now().strftime('%Y-%m-%d')
     print(f"미국 TOP 30 정밀 감시 시작: (기준 폭락 {US_CRASH_THRESHOLD}%, 폭등 {US_BOOM_THRESHOLD}%)")
     
@@ -208,7 +211,7 @@ def fetch_us_opening_data():
             
     return results
 
-def get_market_status():
+def get_market_status() -> Tuple[str, int]:
     now_utc = datetime.utcnow()
     now_kst = now_utc + timedelta(hours=9)
     weekday = now_kst.weekday()
