@@ -109,32 +109,52 @@ def send_telegram(message):
     except Exception as e:
         print(f"텔레그램 전송 에러: {e}")
 
-def add_to_pending_queue(item):
+def add_to_pending_queue(item: Dict[str, Any]) -> None:
     """트리거된 종목을 대기열 파일에 추가합니다."""
-    queue = []
+    queue: List[Dict[str, Any]] = []
     if os.path.exists(PENDING_ALERTS_FILE):
-        with open(PENDING_ALERTS_FILE, "r", encoding="utf-8") as f:
-            try: queue = json.load(f)
-            except: queue = []
+        try:
+            with open(PENDING_ALERTS_FILE, "r", encoding="utf-8") as f:
+                queue = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError, PermissionError):
+            queue = []
     
-    # 중복 방지 (이름과 날짜/시간 기준)
-    item_id = f"{item['name']}_{item['date']}_{datetime.now().hour}"
-    if not any(f"{i['name']}_{i['date']}_{datetime.now().hour}" == item_id for i in queue):
+    now = datetime.now()
+    current_hour = now.hour
+    
+    # Add timestamp/hour to item for better tracking and deduplication
+    if 'hour' not in item:
+        item['hour'] = current_hour
+    if 'timestamp' not in item:
+        item['timestamp'] = now.strftime('%Y-%m-%d %H:%M:%S')
+    
+    # 중복 방지 (이름, 날짜, 시간 기준)
+    item_id = f"{item['name']}_{item['date']}_{current_hour}"
+    if not any(f"{i['name']}_{i['date']}_{i.get('hour', -1)}" == item_id for i in queue):
         queue.append(item)
-        with open(PENDING_ALERTS_FILE, "w", encoding="utf-8") as f:
-            json.dump(queue, f, ensure_ascii=False, indent=2)
+        try:
+            atomic_write_json(PENDING_ALERTS_FILE, queue)
+        except Exception as e:
+            print(f"[-] 대기열 파일 쓰기 에러: {e}")
 
-def get_pending_queue():
+def get_pending_queue() -> List[Dict[str, Any]]:
     """대기열 데이터를 가져오고 파일을 비웁니다."""
     if not os.path.exists(PENDING_ALERTS_FILE):
         return []
-    with open(PENDING_ALERTS_FILE, "r", encoding="utf-8") as f:
-        try: queue = json.load(f)
-        except: queue = []
+    
+    queue: List[Dict[str, Any]] = []
+    try:
+        with open(PENDING_ALERTS_FILE, "r", encoding="utf-8") as f:
+            queue = json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError, PermissionError):
+        queue = []
     
     # 발송 준비를 위해 파일 초기화
-    with open(PENDING_ALERTS_FILE, "w", encoding="utf-8") as f:
-        json.dump([], f)
+    try:
+        atomic_write_json(PENDING_ALERTS_FILE, [])
+    except Exception as e:
+        print(f"[-] 대기열 파일 초기화 에러: {e}")
+        
     return queue
 
 def fetch_realtime_etf_data():
