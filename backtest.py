@@ -1,12 +1,10 @@
-import json
 import os
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from etf_monitor import fetch_realtime_etf_data, US_WATCH_LIST
-
-HISTORY_FILE = "notified_disclosures.json"
+import db_manager
 
 def get_name_to_ticker_map() -> Dict[str, str]:
     """한국 ETF 이름과 미국 티커를 yfinance 코드(예: 069500.KS, TSLA)로 매핑합니다."""
@@ -24,40 +22,12 @@ def get_name_to_ticker_map() -> Dict[str, str]:
         
     return mapping
 
-def load_history() -> List[Dict[str, str]]:
-    """notified_disclosures.json 파일을 읽어 분석 대상을 추출합니다."""
-    if not os.path.exists(HISTORY_FILE):
-        print(f"[-] {HISTORY_FILE} 파일이 없습니다.")
-        return []
-        
-    try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            history = json.load(f)
-    except Exception as e:
-        print(f"[-] 히스토리 파일 로드 실패: {e}")
-        return []
-        
-    results = []
-    for key, date_str in history.items():
-        if key.startswith("SUMMARY_"):
-            continue
-            
-        # key format: "Name_YYYY-MM-DD"
-        # name에 '_'가 포함될 수 있으므로 오른쪽에서 첫 번째 '_'를 기준으로 분리
-        if "_" not in key:
-            continue
-            
-        name = key.rsplit("_", 1)[0]
-        results.append({
-            "name": name,
-            "date": date_str
-        })
-        
-    return results
-
 def run_backtest():
     """백테스트 메인 로직"""
-    history = load_history()
+    # DB 초기화 및 히스토리 로드
+    db_manager.init_db()
+    history = db_manager.get_all_history()
+    
     if not history:
         print("[-] 분석할 알림 이력이 없습니다.")
         return
@@ -69,12 +39,18 @@ def run_backtest():
     print(f"[*] 총 {len(history)}건의 알림 이력 분석 시작...")
     
     for entry in history:
-        name = entry['name']
-        alert_date = entry['date']
-        ticker_symbol = name_to_ticker.get(name)
+        name = entry.get('name') or entry['item_id'].rsplit("_", 1)[0]
+        alert_date = entry['alert_date']
         
+        # DB에 티커 정보가 있으면 우선 사용, 없으면 매핑 시도
+        ticker_symbol = entry.get('ticker')
+        if ticker_symbol and entry.get('market') == 'KOR' and not ticker_symbol.endswith('.KS'):
+            ticker_symbol = f"{ticker_symbol}.KS"
+            
         if not ticker_symbol:
-            # 매핑에 없는 경우(예: 수동 추가 혹은 이름 변경) 티커 자체라고 가정해봄
+            ticker_symbol = name_to_ticker.get(name)
+            
+        if not ticker_symbol:
             ticker_symbol = name
             
         try:
@@ -88,8 +64,9 @@ def run_backtest():
                 print(f"  [-] {name} ({ticker_symbol}) 데이터를 찾을 수 없습니다.")
                 continue
                 
-            # 알림 발생 당일(혹은 가장 가까운 개장일) 종가 찾기
-            entry_price = df.iloc[0]['Close']
+            # 알림 발생 당시의 가격 (DB에 있으면 사용, 없으면 당일 종가)
+            db_price = entry.get('price')
+            entry_price = db_price if db_price else df.iloc[0]['Close']
             actual_entry_date = df.index[0].strftime('%Y-%m-%d')
             
             row = {
@@ -97,7 +74,8 @@ def run_backtest():
                 "Ticker": ticker_symbol,
                 "Alert Date": alert_date,
                 "Actual Entry Date": actual_entry_date,
-                "Entry Price": round(entry_price, 2)
+                "Entry Price": round(entry_price, 2),
+                "Alert RSI": entry.get('rsi', 'N/A')
             }
             
             # T+N일 수익률 계산 (T+1, T+3, T+5, T+10, T+20, T+60)
@@ -126,6 +104,7 @@ def run_backtest():
     print("\n" + "="*80)
     print("📈 [ETF 모니터 알림 성과 백테스트 결과]")
     print("="*80)
+    # 데이터가 많을 수 있으므로 상위/하위 10개만 출력하거나 전체 출력
     print(results_df.to_string(index=False))
     print("="*80)
     

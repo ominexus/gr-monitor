@@ -8,6 +8,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import tempfile
 from typing import List, Tuple, Dict, Any, Optional
+import db_manager
 
 # GitHub Secrets에서 환경 변수 불러오기
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -15,21 +16,6 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GOOGLE_SERVICE_ACCOUNT = os.getenv("GOOGLE_SERVICE_ACCOUNT") # JSON 스트링
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 # -----------------
-
-def atomic_write_json(file_path: str, data: Any) -> None:
-    """Writes JSON data to a file atomically using a temporary file."""
-    dir_name = os.path.dirname(file_path)
-    if not dir_name:
-        dir_name = "."
-    fd, temp_path = tempfile.mkstemp(dir=dir_name, text=True)
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(temp_path, file_path)
-    except Exception:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        raise
 
 def log_to_google_sheets(items: List[Dict[str, Any]]) -> None:
     """구글 시트에 데이터를 기록합니다. (중복 방지 적용)"""
@@ -200,53 +186,24 @@ def send_telegram(message: str) -> bool:
         return False
 
 def add_to_pending_queue(item: Dict[str, Any]) -> None:
-    """트리거된 종목을 대기열 파일에 추가합니다."""
-    queue: List[Dict[str, Any]] = []
-    if os.path.exists(PENDING_ALERTS_FILE):
-        try:
-            with open(PENDING_ALERTS_FILE, "r", encoding="utf-8") as f:
-                queue = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError, PermissionError):
-            queue = []
-    
+    """트리거된 종목을 DB 대기열에 추가합니다."""
+    # 중복 방지 (이름, 날짜, 시간 기준)는 db_manager 또는 호출부에서 처리 가능
+    # 여기서는 기존 로직 유지를 위해 hour 추가
     now = datetime.now()
-    current_hour = now.hour
-    
-    # Add timestamp/hour to item for better tracking and deduplication
     if 'hour' not in item:
-        item['hour'] = current_hour
+        item['hour'] = now.hour
     if 'timestamp' not in item:
         item['timestamp'] = now.strftime('%Y-%m-%d %H:%M:%S')
-    
-    # 중복 방지 (이름, 날짜, 시간 기준)
-    item_id = f"{item['name']}_{item['date']}_{current_hour}"
-    if not any(f"{i['name']}_{i['date']}_{i.get('hour', -1)}" == item_id for i in queue):
-        queue.append(item)
-        try:
-            atomic_write_json(PENDING_ALERTS_FILE, queue)
-        except Exception as e:
-            print(f"[-] 대기열 파일 쓰기 에러: {e}")
+        
+    db_manager.add_to_queue(item)
 
 def get_pending_queue() -> List[Dict[str, Any]]:
     """대기열 데이터를 가져옵니다."""
-    if not os.path.exists(PENDING_ALERTS_FILE):
-        return []
-    
-    queue: List[Dict[str, Any]] = []
-    try:
-        with open(PENDING_ALERTS_FILE, "r", encoding="utf-8") as f:
-            queue = json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError, PermissionError):
-        queue = []
-        
-    return queue
+    return db_manager.get_queue()
 
 def clear_pending_queue() -> None:
-    """대기열 파일을 비웁니다."""
-    try:
-        atomic_write_json(PENDING_ALERTS_FILE, [])
-    except Exception as e:
-        print(f"[-] 대기열 파일 초기화 에러: {e}")
+    """대기열을 비웁니다."""
+    db_manager.clear_queue()
 
 def send_hourly_summary(current_hour: int) -> bool:
     """대기열에 쌓인 데이터를 통합하여 발송합니다."""
@@ -426,45 +383,31 @@ def handle_telegram_commands(token: str, state: Dict[str, Any]) -> bool:
         return False
 
 def main() -> None:
-    # 0. 상태 파일 로드
-    state_file = "bot_state.json"
-    bot_state: Dict[str, Any] = {}
-    if os.path.exists(state_file):
-        try:
-            with open(state_file, "r") as f:
-                bot_state = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError, PermissionError):
-            bot_state = {}
+    # 0. DB 초기화 및 마이그레이션
+    db_manager.init_db()
+    db_manager.migrate_from_json()
     
     state_changed = False
 
     # 1. 텔레그램 명령어 처리 (장 상태와 관계없이 실행)
     if TELEGRAM_TOKEN:
-        if handle_telegram_commands(TELEGRAM_TOKEN, bot_state):
+        # DB에서 last_update_id 가져오기
+        last_id = int(db_manager.get_state("last_update_id", 0))
+        temp_state = {"last_update_id": last_id}
+        if handle_telegram_commands(TELEGRAM_TOKEN, temp_state):
+            db_manager.set_state("last_update_id", temp_state["last_update_id"])
             state_changed = True
 
     # 2. 장 상태 확인
     market, kst_time = get_market_status()
 
     if market == "CLOSED":
-        if state_changed:
-            try:
-                atomic_write_json(state_file, bot_state)
-            except Exception as e:
-                print(f"[-] 봇 상태 파일 쓰기 에러: {e}")
         print(f"[-] 시장 마감: 명령어 확인 후 종료합니다.")
         return
 
     now = datetime.now()
     today_str = now.strftime('%Y-%m-%d')
-    history_file = "notified_disclosures.json"
-    history_data: Dict[str, Any] = {}
-    if os.path.exists(history_file):
-        try:
-            with open(history_file, "r", encoding="utf-8") as f:
-                history_data = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError, PermissionError):
-            history_data = {}
+    history_tag = f"SUMMARY_{today_str}"
 
     all_items: List[Dict[str, Any]] = []
     if market == "KOR":
@@ -477,11 +420,6 @@ def main() -> None:
         threshold = US_CRASH_THRESHOLD
 
     if not all_items:
-        if state_changed:
-            try:
-                atomic_write_json(state_file, bot_state)
-            except Exception as e:
-                print(f"[-] 봇 상태 파일 쓰기 에러: {e}")
         return
 
     # 괴리율 1.0% 이상 또는 급등 기준을 넘는 아이템을 시트에 기록
@@ -497,15 +435,14 @@ def main() -> None:
     if items_to_log:
         log_to_google_sheets(items_to_log)
 
-    history_changed = False
     boom_candidates: List[Dict[str, Any]] = []
     crash_candidates: List[Dict[str, Any]] = []
 
     for item in all_items:
         item_id = f"{item['name']}_{item['date']}"
         
-        # 이미 알림을 보낸 종목은 제외
-        if item_id in history_data:
+        # 이미 알림을 보낸 종목은 제외 (DB 조회)
+        if db_manager.has_history(item_id):
             continue
 
         # 텔레그램 알림용 필터링 (거래량 기준)
@@ -540,42 +477,28 @@ def main() -> None:
         
         item['news'] = fetch_latest_news(ticker)
         
-        item_id = f"{item['name']}_{item['date']}"
+        # 대기열에 추가 및 히스토리에 기록 (DB)
         add_to_pending_queue(item)
-        history_data[item_id] = item['date']
-        history_changed = True
+        db_manager.add_history(item)
 
     # 시간 변경 감지 및 요약 발송 로직 추가
     current_hour = now.hour
-    last_summary_hour = bot_state.get("last_summary_hour", -1)
+    last_summary_hour = int(db_manager.get_state("last_summary_hour", -1))
 
     if current_hour != last_summary_hour:
         if send_hourly_summary(current_hour):
-            bot_state["last_summary_hour"] = current_hour
+            db_manager.set_state("last_summary_hour", current_hour)
             state_changed = True
 
     # 한국 장 마감 요약
-    if market == "KOR" and 1540 <= kst_time <= 1555 and f"SUMMARY_{today_str}" not in history_data:
+    if market == "KOR" and 1540 <= kst_time <= 1555 and not db_manager.get_state(history_tag):
         sorted_items = sorted(all_items, key=lambda x: x['rate'])[:5]
         if sorted_items:
             summary_msg = f"📝 *[장 마감 ETF 저평가 요약]*\n📅 {today_str}\n\n"
             for i, itm in enumerate(sorted_items, 1):
                 summary_msg += f"{i}. *{itm['name']}*\n    └ 괴리율: `{itm['rate']}%` | 거래량: {itm['volume']:,}주\n"
             if send_telegram(summary_msg):
-                history_data[f"SUMMARY_{today_str}"] = today_str
-                history_changed = True
-
-    if history_changed:
-        try:
-            atomic_write_json(history_file, history_data)
-        except Exception as e:
-            print(f"[-] 히스토리 파일 쓰기 에러: {e}")
-            
-    if state_changed:
-        try:
-            atomic_write_json(state_file, bot_state)
-        except Exception as e:
-            print(f"[-] 봇 상태 파일 쓰기 에러: {e}")
+                db_manager.set_state(history_tag, today_str)
 
 if __name__ == "__main__":
     main()

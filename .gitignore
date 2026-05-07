@@ -5,3 +5,7 @@ __pycache__/
 notified_disclosures.json
 bot_state.json
 pending_alerts.json
+*.db
+*.bak
+*.log
+*.csv
