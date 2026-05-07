@@ -3,6 +3,7 @@ import requests
 from datetime import datetime, timedelta
 import json
 import yfinance as yf
+import pandas as pd
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import tempfile
@@ -97,6 +98,93 @@ US_WATCH_LIST = [
 # -----------------
 PENDING_ALERTS_FILE = "pending_alerts.json"
 # -----------------
+
+def calculate_rsi(ticker_symbol: str, period: int = 14) -> Optional[float]:
+    """주어진 티커의 RSI(상대강도지수)를 계산합니다."""
+    try:
+        # yfinance는 pandas 객체를 반환하므로 내부적으로 pandas가 필요합니다.
+        ticker = yf.Ticker(ticker_symbol)
+        # RSI 14를 안정적으로 계산하기 위해 약 2달치 데이터를 가져옴
+        df = ticker.history(period="2mo", interval="1d")
+        
+        if len(df) < period + 1:
+            return None
+            
+        close = df['Close']
+        delta = close.diff()
+        
+        gain = delta.copy()
+        loss = delta.copy()
+        gain[gain < 0] = 0
+        loss[loss > 0] = 0
+        loss = abs(loss)
+        
+        # Wilder's smoothing (RSI 표준 계산 방식)
+        avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        latest_rsi = rsi.iloc[-1]
+        if pd.isna(latest_rsi):
+            return None
+            
+        return round(float(latest_rsi), 2)
+        
+    except Exception as e:
+        print(f"[-] RSI 계산 실패 ({ticker_symbol}): {e}")
+        return None
+
+def filter_by_rsi(candidates: List[Dict[str, Any]], is_boom: bool) -> List[Dict[str, Any]]:
+    """후보 종목들에 대해 RSI 필터링을 수행합니다."""
+    if not candidates:
+        return []
+
+    print(f"[*] {len(candidates)}개 후보 종목에 대해 RSI 필터링 시작 (Boom: {is_boom})...")
+    filtered: List[Dict[str, Any]] = []
+    
+    for item in candidates:
+        # 한국 마켓이면 .KS 접미사 추가
+        ticker = item['code']
+        if item.get('market') == 'KOR':
+            ticker = f"{ticker}.KS"
+            
+        rsi = calculate_rsi(ticker)
+        if rsi is None:
+            # RSI 계산 실패 시 안전하게 제외 (또는 포함할지 선택 가능, 여기서는 제외)
+            continue
+            
+        item['rsi'] = rsi
+        
+        if is_boom:
+            if rsi >= 70:
+                filtered.append(item)
+                print(f"  [+] {item['name']} 통과 (RSI: {rsi})")
+        else:
+            if rsi <= 30:
+                filtered.append(item)
+                print(f"  [+] {item['name']} 통과 (RSI: {rsi})")
+                
+    return filtered
+
+def fetch_latest_news(ticker_symbol: str) -> Optional[Dict[str, str]]:
+    """yfinance를 사용하여 해당 종목의 최신 뉴스 1건을 가져옵니다."""
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        news = ticker.news
+        if not news:
+            return None
+        
+        # 가장 최근 뉴스 1건 추출
+        latest = news[0]
+        return {
+            "title": latest.get("title", "No Title"),
+            "link": latest.get("link", "#")
+        }
+    except Exception as e:
+        print(f"[-] 뉴스 가져오기 실패 ({ticker_symbol}): {e}")
+        return None
 
 def send_telegram(message: str) -> bool:
     if not TELEGRAM_TOKEN or not CHAT_ID:
@@ -202,10 +290,16 @@ def send_hourly_summary(current_hour: int) -> bool:
         top_items = sorted_items[:5]
         
         for itm in top_items:
+            rsi_val = itm.get('rsi', 'N/A')
             if "KOR" in key:
-                summary_msg += f"• {itm['name']}: `{itm['rate']}%` ({itm['price']:,}원)\n"
+                summary_msg += f"• {itm['name']}: `{itm['rate']}%` (RSI: {rsi_val}) ({itm['price']:,}원)\n"
             else:
-                summary_msg += f"• {itm['name']}: `{itm['rate']}%` ({itm['price']:,.2f} USD)\n"
+                summary_msg += f"• {itm['name']}: `{itm['rate']}%` (RSI: {rsi_val}) ({itm['price']:,.2f} USD)\n"
+            
+            # 뉴스 정보가 있으면 추가
+            news = itm.get('news')
+            if news:
+                summary_msg += f"  📰 [{news['title']}]({news['link']})\n"
         
         if len(items) > 5:
             summary_msg += f"  ...외 {len(items) - 5}건\n"
@@ -404,11 +498,20 @@ def main() -> None:
         log_to_google_sheets(items_to_log)
 
     history_changed = False
+    boom_candidates: List[Dict[str, Any]] = []
+    crash_candidates: List[Dict[str, Any]] = []
+
     for item in all_items:
         item_id = f"{item['name']}_{item['date']}"
         
-        # 텔레그램 알림용 필터링 (거래량 및 임계값 기준)
+        # 이미 알림을 보낸 종목은 제외
+        if item_id in history_data:
+            continue
+
+        # 텔레그램 알림용 필터링 (거래량 기준)
         is_high_volume = item.get('volume', 0) >= MIN_VOLUME if market == "KOR" else True
+        if not is_high_volume:
+            continue
         
         is_boom = False
         is_crash = False
@@ -420,10 +523,27 @@ def main() -> None:
             is_boom = item['rate'] >= US_BOOM_THRESHOLD
             is_crash = item['rate'] <= US_CRASH_THRESHOLD
 
-        if (is_boom or is_crash) and item_id not in history_data and is_high_volume:
-            add_to_pending_queue(item)
-            history_data[item_id] = item['date']
-            history_changed = True
+        if is_boom:
+            boom_candidates.append(item)
+        elif is_crash:
+            crash_candidates.append(item)
+
+    # RSI 필터링 적용 (2차 필터)
+    filtered_boom = filter_by_rsi(boom_candidates, is_boom=True)
+    filtered_crash = filter_by_rsi(crash_candidates, is_boom=False)
+
+    for item in filtered_boom + filtered_crash:
+        # 뉴스 가져오기 (알림 대상 종목에 대해서만)
+        ticker = item['code']
+        if item.get('market') == 'KOR':
+            ticker = f"{ticker}.KS"
+        
+        item['news'] = fetch_latest_news(ticker)
+        
+        item_id = f"{item['name']}_{item['date']}"
+        add_to_pending_queue(item)
+        history_data[item_id] = item['date']
+        history_changed = True
 
     # 시간 변경 감지 및 요약 발송 로직 추가
     current_hour = now.hour
