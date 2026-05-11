@@ -47,6 +47,8 @@ def init_db():
                 ma5 REAL,
                 ma20 REAL,
                 ma_bullish INTEGER,
+                vol_ratio REAL,
+                vol_spike INTEGER,
                 extra_data TEXT
             )
         """)
@@ -69,6 +71,12 @@ def init_db():
         except: pass
         try:
             cursor.execute("ALTER TABLE history ADD COLUMN ma_bullish INTEGER")
+        except: pass
+        try:
+            cursor.execute("ALTER TABLE history ADD COLUMN vol_ratio REAL")
+        except: pass
+        try:
+            cursor.execute("ALTER TABLE history ADD COLUMN vol_spike INTEGER")
         except: pass
             
         conn.commit()
@@ -166,8 +174,8 @@ def add_history(item: Dict[str, Any]):
         cursor.execute("""
             INSERT OR REPLACE INTO history 
             (item_id, name, ticker, market, alert_date, price, rsi, 
-             macd, macd_hist, macd_cross, ma5, ma20, ma_bullish)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             macd, macd_hist, macd_cross, ma5, ma20, ma_bullish, vol_ratio, vol_spike)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             item_id,
             item.get('name'),
@@ -181,7 +189,9 @@ def add_history(item: Dict[str, Any]):
             item.get('macd_cross'),
             item.get('ma5'),
             item.get('ma20'),
-            item.get('ma_bullish')
+            item.get('ma_bullish'),
+            item.get('vol_ratio'),
+            item.get('vol_spike')
         ))
         conn.commit()
 

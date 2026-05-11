@@ -47,12 +47,23 @@ def load_data():
 st.title("📈 ETF Monitor")
 df = load_data()
 
+# --- Performance Summary Stats ---
+def calculate_summary_stats(data):
+    if data.empty:
+        return 0, 0
+    # 최근 50개 알림 데이터 기준 (너무 많으면 느림)
+    recent = data.sort_values(by='alert_date', ascending=False).head(30)
+    # T+5 수익률 기준 승률 계산 (실제론 get_avg_returns와 유사한 로직 필요)
+    # 여기서는 간단히 표시하기 위해 예시 데이터를 사용하거나, 
+    # 실제 연산이 필요하면 get_avg_returns 결과를 활용합니다.
+    return len(recent), 0 # 임시
+
 # Implement Key Metrics (Always 3 columns, but compact)
 today = datetime.now().date()
 today_alerts = len(df[df['alert_date'].dt.date == today]) if not df.empty else 0
 
 m1, m2, m3 = st.columns(3)
-m1.metric("Total", len(df))
+m1.metric("Total alerts", len(df))
 m2.metric("Today", today_alerts)
 m3.metric("Markets", df['market'].nunique() if 'market' in df.columns else 0)
 
@@ -79,6 +90,8 @@ st.subheader("Alert History")
 display_cols = ['alert_date', 'ticker', 'name', 'price', 'rsi']
 if 'macd_hist' in filtered_df.columns:
     display_cols += ['macd_hist']
+if 'vol_ratio' in filtered_df.columns:
+    display_cols += ['vol_ratio']
 
 st.dataframe(
     filtered_df[display_cols].sort_values(by='alert_date', ascending=False), 

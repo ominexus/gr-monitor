@@ -116,6 +116,11 @@ def calculate_indicators(ticker_symbol: str) -> Optional[Dict[str, Any]]:
         df['ma5'] = close.rolling(window=5).mean()
         df['ma20'] = close.rolling(window=20).mean()
         
+        # 4. Volume Analysis
+        avg_volume = df['Volume'].rolling(window=20).mean()
+        latest_volume = df['Volume'].iloc[-1]
+        vol_ratio = latest_volume / avg_volume.iloc[-1] if avg_volume.iloc[-1] > 0 else 1.0
+        
         latest = df.iloc[-1]
         prev = df.iloc[-2]
         
@@ -127,7 +132,9 @@ def calculate_indicators(ticker_symbol: str) -> Optional[Dict[str, Any]]:
             "macd_cross": (prev['macd'] < prev['signal']) and (latest['macd'] >= latest['signal']), # 골든크로스
             "ma5": round(float(latest['ma5']), 2),
             "ma20": round(float(latest['ma20']), 2),
-            "ma_bullish": latest['ma5'] > latest['ma20'] # 정배열 초기
+            "ma_bullish": latest['ma5'] > latest['ma20'], # 정배열 초기
+            "vol_ratio": round(float(vol_ratio), 2),
+            "vol_spike": vol_ratio >= 1.5 # 평균 거래량 대비 1.5배 이상
         }
         
     except Exception as e:
@@ -135,7 +142,7 @@ def calculate_indicators(ticker_symbol: str) -> Optional[Dict[str, Any]]:
         return None
 
 def filter_by_indicators(candidates: List[Dict[str, Any]], is_boom: bool) -> List[Dict[str, Any]]:
-    """후보 종목들에 대해 복합 지표(RSI, MACD, MA) 필터링을 수행합니다."""
+    """후보 종목들에 대해 복합 지표(RSI, MACD, MA, Volume) 필터링을 수행합니다."""
     if not candidates:
         return []
 
@@ -160,12 +167,12 @@ def filter_by_indicators(candidates: List[Dict[str, Any]], is_boom: bool) -> Lis
                 filtered.append(item)
                 print(f"  [+] {item['name']} 통과 (RSI: {rsi})")
         else:
-            # 급락/저평가: RSI 과매도(35 이하) + (MACD 골든크로스 OR RSI 극심한 과매도 25 이하)
-            # 단순히 떨어지는 칼날을 잡는 게 아니라, 반등의 신호가 보일 때 알림
+            # 급락/저평가: RSI 과매도(35 이하) + (MACD 골든크로스 OR RSI 극심한 과매도 25 이하 OR 정배열 + 거래량 동반)
             if rsi <= 35:
-                if inds['macd_cross'] or rsi <= 25 or inds['ma_bullish']:
+                # 더 정교한 조건: 하락세 진정 후 반등 신호
+                if inds['macd_cross'] or rsi <= 25 or (inds['ma_bullish'] and inds['vol_spike']):
                     filtered.append(item)
-                    status = "GoldenCross" if inds['macd_cross'] else ("Extreme" if rsi <= 25 else "MA_Bullish")
+                    status = "GoldenCross" if inds['macd_cross'] else ("Extreme" if rsi <= 25 else "VolSpike_MA")
                     print(f"  [+] {item['name']} 통과 (RSI: {rsi}, Signal: {status})")
                 
     return filtered
