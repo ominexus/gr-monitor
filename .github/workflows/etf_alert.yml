@@ -32,7 +32,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install requests yfinance google-auth google-api-python-client
+        pip install -r requirements.txt
 
     - name: Run ETF Monitor Script
       env:
@@ -46,10 +46,10 @@ jobs:
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git add notified_disclosures.json bot_state.json || echo "No files to add"
+        git add notified_disclosures.json bot_state.json monitor.db || echo "No files to add"
         if git diff --staged --quiet; then
           echo "No changes to commit"
         else
-          git commit -m "Update monitor history and bot state [skip ci]"
+          git commit -m "chore: auto-update monitor data and database [skip ci]"
           git push
         fi
