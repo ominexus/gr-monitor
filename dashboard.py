@@ -6,7 +6,28 @@ import yfinance as yf
 from datetime import datetime, timedelta
 
 # Page config
-st.set_page_config(page_title="ETF Monitor Dashboard", layout="wide")
+st.set_page_config(page_title="ETF Monitor", page_icon="📈", layout="wide")
+
+# Custom CSS for Mobile Optimization
+st.markdown("""
+    <style>
+    /* Reduce padding for mobile */
+    .block-container {
+        padding-top: 1rem;
+        padding-bottom: 1rem;
+        padding-left: 0.8rem;
+        padding-right: 0.8rem;
+    }
+    /* Responsive metrics */
+    [data-testid="stMetricValue"] {
+        font-size: 1.5rem !important;
+    }
+    /* Force buttons to be full width on mobile */
+    .stButton > button {
+        width: 100%;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 def get_connection():
     return sqlite3.connect("monitor.db")
@@ -23,27 +44,24 @@ def load_data():
     finally:
         conn.close()
 
-st.title("📈 ETF Monitor Dashboard")
+st.title("📈 ETF Monitor")
 df = load_data()
 
-# Implement Key Metrics
+# Implement Key Metrics (Always 3 columns, but compact)
 today = datetime.now().date()
 today_alerts = len(df[df['alert_date'].dt.date == today]) if not df.empty else 0
 
-col1, col2, col3 = st.columns(3)
-col1.metric("Total Alerts", len(df))
-col2.metric("Today's Alerts", today_alerts)
-col3.metric("Markets", df['market'].nunique() if 'market' in df.columns else 0)
+m1, m2, m3 = st.columns(3)
+m1.metric("Total", len(df))
+m2.metric("Today", today_alerts)
+m3.metric("Markets", df['market'].nunique() if 'market' in df.columns else 0)
 
-# Add Filters and Data Table
-st.sidebar.header("Filters")
-unique_markets = df['market'].unique() if 'market' in df.columns else []
-market_filter = st.sidebar.multiselect("Market", options=unique_markets, default=list(unique_markets))
-
-# RSI Filter
-rsi_range = st.sidebar.slider("RSI Range", 0, 100, (0, 100))
-
-name_search = st.sidebar.text_input("Search Ticker/Name")
+# Add Filters in an Expander for mobile space saving
+with st.expander("🔍 Filters & Search", expanded=False):
+    unique_markets = df['market'].unique() if 'market' in df.columns else []
+    market_filter = st.multiselect("Market", options=unique_markets, default=list(unique_markets))
+    rsi_range = st.slider("RSI Range", 0, 100, (0, 100))
+    name_search = st.text_input("Ticker/Name Search")
 
 filtered_df = df.copy()
 if market_filter:
@@ -57,80 +75,76 @@ if name_search:
     ]
 
 st.subheader("Alert History")
-# Display columns selection
-display_cols = ['alert_date', 'market', 'ticker', 'name', 'price', 'rsi']
+# Display columns selection - Simplified for Mobile screen
+display_cols = ['alert_date', 'ticker', 'name', 'price', 'rsi']
 if 'macd_hist' in filtered_df.columns:
-    display_cols += ['macd_hist', 'macd_cross', 'ma_bullish']
+    display_cols += ['macd_hist']
 
 st.dataframe(
     filtered_df[display_cols].sort_values(by='alert_date', ascending=False), 
-    use_container_width=True
+    use_container_width=True,
+    hide_index=True
 )
 
 csv = filtered_df.to_csv(index=False).encode('utf-8-sig')
-st.download_button("Download CSV", data=csv, file_name="etf_alerts.csv", mime="text/csv")
+st.download_button("📥 Download CSV", data=csv, file_name="etf_alerts.csv", mime="text/csv", use_container_width=True)
 
 st.subheader("Visual Analysis")
-c1, col2 = st.columns(2)
+# Use tabs for charts on mobile to save vertical space
+tab1, tab2 = st.tabs(["📈 Trend", "📊 RSI"])
 
-with c1:
-    st.write("#### Alert Trend")
+with tab1:
     if not filtered_df.empty:
         trend_df = filtered_df.groupby(filtered_df['alert_date'].dt.date).size().reset_index(name='count')
-        fig_trend = px.line(trend_df, x='alert_date', y='count', title="Daily Alert Count")
+        fig_trend = px.line(trend_df, x='alert_date', y='count', title="Daily Alerts")
+        fig_trend.update_layout(margin=dict(l=10, r=10, t=30, b=10))
         st.plotly_chart(fig_trend, use_container_width=True)
     else:
-        st.info("No data available for trend analysis.")
+        st.info("No data.")
 
-with col2:
-    st.write("#### RSI Distribution")
+with tab2:
     if 'rsi' in filtered_df.columns and not filtered_df.empty:
-        fig_rsi = px.histogram(filtered_df, x='rsi', nbins=20, title="RSI Distribution at Alert")
-        fig_rsi.add_vline(x=30, line_dash="dash", line_color="red", annotation_text="Oversold")
-        fig_rsi.add_vline(x=70, line_dash="dash", line_color="green", annotation_text="Overbought")
+        fig_rsi = px.histogram(filtered_df, x='rsi', nbins=15, title="RSI Dist")
+        fig_rsi.add_vline(x=30, line_dash="dash", line_color="red")
+        fig_rsi.add_vline(x=70, line_dash="dash", line_color="green")
+        fig_rsi.update_layout(margin=dict(l=10, r=10, t=30, b=10))
         st.plotly_chart(fig_rsi, use_container_width=True)
     else:
-        st.info("No RSI data available.")
+        st.info("No RSI data.")
 
 @st.cache_data(ttl=3600)
 def get_avg_returns(data):
-    # For a subset of recent data to keep it fast
     recent_df = data.sort_values(by='alert_date', ascending=False).head(20)
     returns = {1: [], 5: [], 20: []}
-    
     for _, row in recent_df.iterrows():
         ticker_symbol = row['ticker']
         if row['market'] == 'KOR' and not (ticker_symbol.endswith('.KS') or ticker_symbol.endswith('.KQ')):
             ticker_symbol = f"{ticker_symbol}.KS"
-        
         try:
-            # 주말 고려 넉넉하게 40일.
             hist = yf.Ticker(ticker_symbol).history(start=row['alert_date'], end=row['alert_date'] + timedelta(days=40))
             if len(hist) > 1:
-                # 알림 당시의 실제 가격이 DB에 있으면 사용, 아니면 T+0 종가 사용
                 entry_price = row['price'] if pd.notna(row['price']) else hist.iloc[0]['Close']
                 for days in [1, 5, 20]:
                     if len(hist) > days:
                         ret = (hist.iloc[days]['Close'] - entry_price) / entry_price * 100
                         returns[days].append(ret)
-        except:
-            continue
-            
+        except: continue
     avg_rets = {k: sum(v)/len(v) if v else 0 for k, v in returns.items()}
     return avg_rets
 
 st.divider()
-st.subheader("Performance Analysis (Recent 20 alerts)")
-if st.button("Run Performance Analysis"):
+st.subheader("Performance (Recent 20)")
+if st.button("🚀 Run Performance Analysis"):
     if not df.empty:
-        with st.spinner("Fetching historical data..."):
+        with st.spinner("Analyzing..."):
             avg_rets = get_avg_returns(df)
             perf_df = pd.DataFrame({
                 'Period': ['T+1', 'T+5', 'T+20'],
                 'Avg Return (%)': [avg_rets[1], avg_rets[5], avg_rets[20]]
             })
             fig_perf = px.bar(perf_df, x='Period', y='Avg Return (%)', color='Avg Return (%)', 
-                             color_continuous_scale='RdYlGn', title="Average Returns after Alert")
+                             color_continuous_scale='RdYlGn')
+            fig_perf.update_layout(margin=dict(l=10, r=10, t=30, b=10))
             st.plotly_chart(fig_perf, use_container_width=True)
     else:
-        st.warning("No data available to analyze performance.")
+        st.warning("No data.")
