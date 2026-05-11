@@ -39,11 +39,17 @@ col3.metric("Markets", df['market'].nunique() if 'market' in df.columns else 0)
 st.sidebar.header("Filters")
 unique_markets = df['market'].unique() if 'market' in df.columns else []
 market_filter = st.sidebar.multiselect("Market", options=unique_markets, default=list(unique_markets))
+
+# RSI Filter
+rsi_range = st.sidebar.slider("RSI Range", 0, 100, (0, 100))
+
 name_search = st.sidebar.text_input("Search Ticker/Name")
 
 filtered_df = df.copy()
 if market_filter:
     filtered_df = filtered_df[filtered_df['market'].isin(market_filter)]
+if rsi_range:
+    filtered_df = filtered_df[(filtered_df['rsi'] >= rsi_range[0]) & (filtered_df['rsi'] <= rsi_range[1])]
 if name_search:
     filtered_df = filtered_df[
         filtered_df['name'].str.contains(name_search, case=False, na=False) | 
