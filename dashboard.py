@@ -63,3 +63,45 @@ with col2:
         fig_rsi.add_vline(x=30, line_dash="dash", line_color="red", annotation_text="Oversold")
         fig_rsi.add_vline(x=70, line_dash="dash", line_color="green", annotation_text="Overbought")
         st.plotly_chart(fig_rsi, use_container_width=True)
+
+import yfinance as yf
+
+@st.cache_data(ttl=3600)
+def get_avg_returns(data):
+    # For a subset of recent data to keep it fast
+    recent_df = data.sort_values(by='alert_date', ascending=False).head(20)
+    returns = {1: [], 5: [], 20: []}
+    
+    for _, row in recent_df.iterrows():
+        ticker_symbol = row['ticker']
+        if row['market'] == 'KOR' and not ticker_symbol.endswith('.KS'):
+            ticker_symbol = f"{ticker_symbol}.KS"
+        
+        try:
+            # alert_date를 기준으로 데이터를 가져옴. 주말 고려 넉넉하게 40일.
+            hist = yf.Ticker(ticker_symbol).history(start=row['alert_date'], end=row['alert_date'] + timedelta(days=40))
+            if len(hist) > 1:
+                # 알림 당시의 실제 가격이 DB에 있으면 사용, 아니면 T+0 종가 사용
+                entry_price = row['price'] if row['price'] else hist.iloc[0]['Close']
+                for days in [1, 5, 20]:
+                    if len(hist) > days:
+                        ret = (hist.iloc[days]['Close'] - entry_price) / entry_price * 100
+                        returns[days].append(ret)
+        except:
+            continue
+            
+    avg_rets = {k: sum(v)/len(v) if v else 0 for k, v in returns.items()}
+    return avg_rets
+
+st.divider()
+st.subheader("Performance Analysis (Recent 20 alerts)")
+if st.button("Run Performance Analysis"):
+    with st.spinner("Fetching historical data..."):
+        avg_rets = get_avg_returns(df)
+        perf_df = pd.DataFrame({
+            'Period': ['T+1', 'T+5', 'T+20'],
+            'Avg Return (%)': [avg_rets[1], avg_rets[5], avg_rets[20]]
+        })
+        fig_perf = px.bar(perf_df, x='Period', y='Avg Return (%)', color='Avg Return (%)', 
+                         color_continuous_scale='RdYlGn', title="Average Returns after Alert")
+        st.plotly_chart(fig_perf, use_container_width=True)
