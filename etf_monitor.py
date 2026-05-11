@@ -66,6 +66,7 @@ def log_to_google_sheets(items: List[Dict[str, Any]]) -> None:
 NORMAL_THRESHOLD = -3.0      # 한국 평시 알림 기준 (%)
 OPENING_THRESHOLD = -5.0     # 한국 시초가 특별 감시 (%)
 BOOM_THRESHOLD = 3.0         # 한국 급등 알림 기준 (%)
+US_NORMAL_THRESHOLD = -3.0    # 미국 평시 감시 기준 (추가)
 US_CRASH_THRESHOLD = -10.0    # 미국 "역대급 폭탄" 감지 기준 (%)
 US_BOOM_THRESHOLD = 10.0      # 미국 폭등 감지 기준 (%)
 MIN_VOLUME = 5000            # 한국 ETF 최소 거래량
@@ -121,6 +122,12 @@ def calculate_indicators(ticker_symbol: str) -> Optional[Dict[str, Any]]:
         latest_volume = df['Volume'].iloc[-1]
         vol_ratio = latest_volume / avg_volume.iloc[-1] if avg_volume.iloc[-1] > 0 else 1.0
         
+        # 5. Trading Guide (Target & Stoploss)
+        target_price = latest['ma20'] # 1차 목표가: 20일 이평선 회복
+        # 최근 10일 최저점 혹은 현재가 기준 -5% 중 낮은 쪽을 손절가로 설정
+        recent_low = df['Low'].tail(10).min()
+        stoploss_price = min(recent_low, latest['Close'] * 0.95)
+        
         latest = df.iloc[-1]
         prev = df.iloc[-2]
         
@@ -134,7 +141,9 @@ def calculate_indicators(ticker_symbol: str) -> Optional[Dict[str, Any]]:
             "ma20": round(float(latest['ma20']), 2),
             "ma_bullish": latest['ma5'] > latest['ma20'], # 정배열 초기
             "vol_ratio": round(float(vol_ratio), 2),
-            "vol_spike": vol_ratio >= 1.5 # 평균 거래량 대비 1.5배 이상
+            "vol_spike": vol_ratio >= 1.5, # 평균 거래량 대비 1.5배 이상
+            "target": round(float(target_price), 2),
+            "stoploss": round(float(stoploss_price), 2)
         }
         
     except Exception as e:
@@ -361,16 +370,16 @@ def fetch_realtime_etf_data() -> List[Dict[str, Any]]:
         return []
 
 def fetch_us_opening_data() -> List[Dict[str, Any]]:
-    """미국 TOP 30 데이터를 가져와 급변동(폭락/폭등) 종목을 찾습니다."""
+    """미국 TOP 30 데이터를 가져와 변동 종목을 찾습니다. (기준 완화)"""
     results: List[Dict[str, Any]] = []
     today = datetime.now().strftime('%Y-%m-%d')
-    print(f"미국 TOP 30 정밀 감시 시작: (기준 폭락 {US_CRASH_THRESHOLD}%, 폭등 {US_BOOM_THRESHOLD}%)")
+    print(f"미국 TOP 30 감시 시작: (기준 하락 {US_NORMAL_THRESHOLD}%, 폭등 {US_BOOM_THRESHOLD}%)")
     
     for symbol in US_WATCH_LIST:
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.fast_info
-            # 실시간 주가와 전일 종가 비교 (추정 괴리율)
+            # 실시간 주가와 전일 종가 비교
             prev_close = info.get('previous_close')
             current_price = info.get('last_price')
             
@@ -378,8 +387,8 @@ def fetch_us_opening_data() -> List[Dict[str, Any]]:
             
             change_rate = round(((current_price - prev_close) / prev_close) * 100, 2)
             
-            # 기록적인 폭락/폭등 발생 시 수집
-            if change_rate <= US_CRASH_THRESHOLD or change_rate >= US_BOOM_THRESHOLD:
+            # 완화된 기준 (-3%) 적용
+            if change_rate <= US_NORMAL_THRESHOLD or change_rate >= US_BOOM_THRESHOLD:
                 results.append({
                     "name": symbol, "code": symbol, "rate": change_rate,
                     "price": current_price, "prev": prev_close,
