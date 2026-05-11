@@ -46,3 +46,20 @@ st.dataframe(filtered_df.sort_values(by='alert_date', ascending=False), use_cont
 
 csv = filtered_df.to_csv(index=False).encode('utf-8-sig')
 st.download_button("Download CSV", data=csv, file_name="etf_alerts.csv", mime="text/csv")
+
+st.subheader("Visual Analysis")
+c1, col2 = st.columns(2)
+
+with c1:
+    st.write("#### Alert Trend")
+    trend_df = filtered_df.groupby(filtered_df['alert_date'].dt.date).size().reset_index(name='count')
+    fig_trend = px.line(trend_df, x='alert_date', y='count', title="Daily Alert Count")
+    st.plotly_chart(fig_trend, use_container_width=True)
+
+with col2:
+    st.write("#### RSI Distribution")
+    if 'rsi' in filtered_df.columns:
+        fig_rsi = px.histogram(filtered_df, x='rsi', nbins=20, title="RSI Distribution at Alert")
+        fig_rsi.add_vline(x=30, line_dash="dash", line_color="red", annotation_text="Oversold")
+        fig_rsi.add_vline(x=70, line_dash="dash", line_color="green", annotation_text="Overbought")
+        st.plotly_chart(fig_rsi, use_container_width=True)
