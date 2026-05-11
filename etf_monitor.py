@@ -290,6 +290,45 @@ def send_hourly_summary(current_hour: int) -> bool:
     
     return True
 
+def send_daily_report() -> bool:
+    """당일 발생한 모든 알림을 요약하여 리포트로 발송합니다."""
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    history = db_manager.get_all_history()
+    
+    # 오늘 데이터만 필터링
+    today_data = [h for h in history if h.get('alert_date') == today_str]
+    
+    if not today_data:
+        return send_telegram(f"📅 *[{today_str} 일일 요약]*\n\n오늘은 감지된 특이 종목이 없습니다. 평온한 하루였네요! ☕")
+
+    # 통계 계산
+    kor_count = len([h for h in today_data if h.get('market') == 'KOR'])
+    usa_count = len([h for h in today_data if h.get('market') == 'USA'])
+    avg_rsi = sum([h.get('rsi', 0) for h in today_data if h.get('rsi')]) / len([h for h in today_data if h.get('rsi')]) if today_data else 0
+
+    report_msg = f"📊 *[ETF Monitor 일일 리포트 - {today_str}]*\n\n"
+    report_msg += f"✅ *오늘의 요약*\n"
+    report_msg += f"• 총 알림: `{len(today_data)}건` (🇰🇷 {kor_count} / 🇺🇸 {usa_count})\n"
+    report_msg += f"• 평균 RSI: `{avg_rsi:.2f}`\n\n"
+
+    # 시장별 주요 종목 (최대 3개씩)
+    for m_code, m_name in [("KOR", "🇰🇷 한국 ETF"), ("USA", "🇺🇸 미국 주식")]:
+        m_items = [h for h in today_data if h.get('market') == m_code]
+        if m_items:
+            report_msg += f"*{m_name} 주요 포착*\n"
+            # 가격 변동폭이나 RSI 기준으로 정렬할 수 있으나 여기선 최신순 3개
+            for h in m_items[:3]:
+                signal = "🔥" if h.get('rsi', 50) > 70 else "❄️"
+                report_msg += f"{signal} {h['name']} ({h['ticker']})\n"
+                report_msg += f"   └ RSI: `{h.get('rsi', 'N/A')}` | MACD: `{h.get('macd_hist', 'N/A')}`\n"
+            report_msg += "\n"
+
+    report_msg += f"💡 _더 자세한 분석은 웹 대시보드에서 확인하세요!_\n"
+    if GOOGLE_SHEET_ID:
+        report_msg += f"🔗 [구글 시트 바로가기](https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID})"
+
+    return send_telegram(report_msg)
+
 def fetch_realtime_etf_data() -> List[Dict[str, Any]]:
     """한국 ETF 데이터를 가져옵니다."""
     url = "https://finance.naver.com/api/sise/etfItemList.nhn"
@@ -506,7 +545,7 @@ def main() -> None:
             db_manager.set_state("last_summary_hour", current_hour)
             state_changed = True
 
-    # 한국 장 마감 요약
+    # 한국 장 마감 요약 (기존)
     if market == "KOR" and 1540 <= kst_time <= 1555 and not db_manager.get_state(history_tag):
         sorted_items = sorted(all_items, key=lambda x: x['rate'])[:5]
         if sorted_items:
@@ -515,6 +554,12 @@ def main() -> None:
                 summary_msg += f"{i}. *{itm['name']}*\n    └ 괴리율: `{itm['rate']}%` | 거래량: {itm['volume']:,}주\n"
             if send_telegram(summary_msg):
                 db_manager.set_state(history_tag, today_str)
+
+    # 일일 종합 리포트 (추가)
+    daily_report_tag = f"DAILY_REPORT_{today_str}"
+    if 1630 <= kst_time <= 1700 and not db_manager.get_state(daily_report_tag):
+        if send_daily_report():
+            db_manager.set_state(daily_report_tag, today_str)
 
 if __name__ == "__main__":
     main()
