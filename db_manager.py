@@ -41,9 +41,36 @@ def init_db():
                 alert_date TEXT,
                 price REAL,
                 rsi REAL,
+                macd REAL,
+                macd_hist REAL,
+                macd_cross INTEGER,
+                ma5 REAL,
+                ma20 REAL,
+                ma_bullish INTEGER,
                 extra_data TEXT
             )
         """)
+        
+        # 컬럼 추가 (기존 DB 마이그레이션 대응)
+        try:
+            cursor.execute("ALTER TABLE history ADD COLUMN macd REAL")
+        except: pass
+        try:
+            cursor.execute("ALTER TABLE history ADD COLUMN macd_hist REAL")
+        except: pass
+        try:
+            cursor.execute("ALTER TABLE history ADD COLUMN macd_cross INTEGER")
+        except: pass
+        try:
+            cursor.execute("ALTER TABLE history ADD COLUMN ma5 REAL")
+        except: pass
+        try:
+            cursor.execute("ALTER TABLE history ADD COLUMN ma20 REAL")
+        except: pass
+        try:
+            cursor.execute("ALTER TABLE history ADD COLUMN ma_bullish INTEGER")
+        except: pass
+            
         conn.commit()
 
 def migrate_from_json():
@@ -138,8 +165,9 @@ def add_history(item: Dict[str, Any]):
         cursor = conn.cursor()
         cursor.execute("""
             INSERT OR REPLACE INTO history 
-            (item_id, name, ticker, market, alert_date, price, rsi)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (item_id, name, ticker, market, alert_date, price, rsi, 
+             macd, macd_hist, macd_cross, ma5, ma20, ma_bullish)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             item_id,
             item.get('name'),
@@ -147,7 +175,13 @@ def add_history(item: Dict[str, Any]):
             item.get('market'),
             item.get('date'),
             item.get('price'),
-            item.get('rsi')
+            item.get('rsi'),
+            item.get('macd'),
+            item.get('macd_hist'),
+            item.get('macd_cross'),
+            item.get('ma5'),
+            item.get('ma20'),
+            item.get('ma_bullish')
         ))
         conn.commit()
 

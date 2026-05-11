@@ -57,7 +57,15 @@ if name_search:
     ]
 
 st.subheader("Alert History")
-st.dataframe(filtered_df.sort_values(by='alert_date', ascending=False), use_container_width=True)
+# Display columns selection
+display_cols = ['alert_date', 'market', 'ticker', 'name', 'price', 'rsi']
+if 'macd_hist' in filtered_df.columns:
+    display_cols += ['macd_hist', 'macd_cross', 'ma_bullish']
+
+st.dataframe(
+    filtered_df[display_cols].sort_values(by='alert_date', ascending=False), 
+    use_container_width=True
+)
 
 csv = filtered_df.to_csv(index=False).encode('utf-8-sig')
 st.download_button("Download CSV", data=csv, file_name="etf_alerts.csv", mime="text/csv")
