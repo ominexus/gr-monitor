@@ -85,72 +85,88 @@ US_WATCH_LIST = [
 PENDING_ALERTS_FILE = "pending_alerts.json"
 # -----------------
 
-def calculate_rsi(ticker_symbol: str, period: int = 14) -> Optional[float]:
-    """주어진 티커의 RSI(상대강도지수)를 계산합니다."""
+def calculate_indicators(ticker_symbol: str) -> Optional[Dict[str, Any]]:
+    """주어진 티커의 RSI, MACD, MA 지표를 계산합니다."""
     try:
-        # yfinance는 pandas 객체를 반환하므로 내부적으로 pandas가 필요합니다.
         ticker = yf.Ticker(ticker_symbol)
-        # RSI 14를 안정적으로 계산하기 위해 약 2달치 데이터를 가져옴
-        df = ticker.history(period="2mo", interval="1d")
+        df = ticker.history(period="3mo", interval="1d")
         
-        if len(df) < period + 1:
+        if len(df) < 30:
             return None
             
+        # 1. RSI (14)
+        period = 14
         close = df['Close']
         delta = close.diff()
-        
-        gain = delta.copy()
-        loss = delta.copy()
-        gain[gain < 0] = 0
-        loss[loss > 0] = 0
-        loss = abs(loss)
-        
-        # Wilder's smoothing (RSI 표준 계산 방식)
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
         avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
         avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-        
         rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
+        df['rsi'] = 100 - (100 / (1 + rs))
         
-        latest_rsi = rsi.iloc[-1]
-        if pd.isna(latest_rsi):
-            return None
-            
-        return round(float(latest_rsi), 2)
+        # 2. MACD (12, 26, 9)
+        exp1 = close.ewm(span=12, adjust=False).mean()
+        exp2 = close.ewm(span=26, adjust=False).mean()
+        df['macd'] = exp1 - exp2
+        df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+        df['macd_hist'] = df['macd'] - df['signal']
+        
+        # 3. Moving Averages (5, 20)
+        df['ma5'] = close.rolling(window=5).mean()
+        df['ma20'] = close.rolling(window=20).mean()
+        
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+        
+        return {
+            "rsi": round(float(latest['rsi']), 2),
+            "macd": round(float(latest['macd']), 3),
+            "signal": round(float(latest['signal']), 3),
+            "macd_hist": round(float(latest['macd_hist']), 3),
+            "macd_cross": (prev['macd'] < prev['signal']) and (latest['macd'] >= latest['signal']), # 골든크로스
+            "ma5": round(float(latest['ma5']), 2),
+            "ma20": round(float(latest['ma20']), 2),
+            "ma_bullish": latest['ma5'] > latest['ma20'] # 정배열 초기
+        }
         
     except Exception as e:
-        print(f"[-] RSI 계산 실패 ({ticker_symbol}): {e}")
+        print(f"[-] 지표 계산 실패 ({ticker_symbol}): {e}")
         return None
 
-def filter_by_rsi(candidates: List[Dict[str, Any]], is_boom: bool) -> List[Dict[str, Any]]:
-    """후보 종목들에 대해 RSI 필터링을 수행합니다."""
+def filter_by_indicators(candidates: List[Dict[str, Any]], is_boom: bool) -> List[Dict[str, Any]]:
+    """후보 종목들에 대해 복합 지표(RSI, MACD, MA) 필터링을 수행합니다."""
     if not candidates:
         return []
 
-    print(f"[*] {len(candidates)}개 후보 종목에 대해 RSI 필터링 시작 (Boom: {is_boom})...")
+    print(f"[*] {len(candidates)}개 후보 종목에 대해 복합 지표 필터링 시작 (Boom: {is_boom})...")
     filtered: List[Dict[str, Any]] = []
     
     for item in candidates:
-        # 한국 마켓이면 .KS 접미사 추가
         ticker = item['code']
         if item.get('market') == 'KOR':
             ticker = f"{ticker}.KS"
             
-        rsi = calculate_rsi(ticker)
-        if rsi is None:
-            # RSI 계산 실패 시 안전하게 제외 (또는 포함할지 선택 가능, 여기서는 제외)
+        inds = calculate_indicators(ticker)
+        if inds is None:
             continue
             
-        item['rsi'] = rsi
+        item.update(inds)
+        rsi = inds['rsi']
         
         if is_boom:
+            # 급등/고평가: RSI 과매수(70+)
             if rsi >= 70:
                 filtered.append(item)
                 print(f"  [+] {item['name']} 통과 (RSI: {rsi})")
         else:
-            if rsi <= 30:
-                filtered.append(item)
-                print(f"  [+] {item['name']} 통과 (RSI: {rsi})")
+            # 급락/저평가: RSI 과매도(35 이하) + (MACD 골든크로스 OR RSI 극심한 과매도 25 이하)
+            # 단순히 떨어지는 칼날을 잡는 게 아니라, 반등의 신호가 보일 때 알림
+            if rsi <= 35:
+                if inds['macd_cross'] or rsi <= 25 or inds['ma_bullish']:
+                    filtered.append(item)
+                    status = "GoldenCross" if inds['macd_cross'] else ("Extreme" if rsi <= 25 else "MA_Bullish")
+                    print(f"  [+] {item['name']} 통과 (RSI: {rsi}, Signal: {status})")
                 
     return filtered
 
@@ -465,9 +481,9 @@ def main() -> None:
         elif is_crash:
             crash_candidates.append(item)
 
-    # RSI 필터링 적용 (2차 필터)
-    filtered_boom = filter_by_rsi(boom_candidates, is_boom=True)
-    filtered_crash = filter_by_rsi(crash_candidates, is_boom=False)
+    # 복합 지표(RSI, MACD, MA) 필터링 적용 (2차 필터)
+    filtered_boom = filter_by_indicators(boom_candidates, is_boom=True)
+    filtered_crash = filter_by_indicators(crash_candidates, is_boom=False)
 
     for item in filtered_boom + filtered_crash:
         # 뉴스 가져오기 (알림 대상 종목에 대해서만)
