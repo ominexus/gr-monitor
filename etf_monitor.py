@@ -121,15 +121,14 @@ def calculate_indicators(ticker_symbol: str) -> Optional[Dict[str, Any]]:
         avg_volume = df['Volume'].rolling(window=20).mean()
         latest_volume = df['Volume'].iloc[-1]
         vol_ratio = latest_volume / avg_volume.iloc[-1] if avg_volume.iloc[-1] > 0 else 1.0
-        
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+
         # 5. Trading Guide (Target & Stoploss)
         target_price = latest['ma20'] # 1차 목표가: 20일 이평선 회복
         # 최근 10일 최저점 혹은 현재가 기준 -5% 중 낮은 쪽을 손절가로 설정
         recent_low = df['Low'].tail(10).min()
         stoploss_price = min(recent_low, latest['Close'] * 0.95)
-        
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
         
         return {
             "rsi": round(float(latest['rsi']), 2),

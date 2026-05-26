@@ -1,10 +1,14 @@
 import json
 import os
 from unittest.mock import patch
-from etf_monitor import send_hourly_summary, PENDING_ALERTS_FILE, clear_pending_queue, atomic_write_json
+from etf_monitor import send_hourly_summary, clear_pending_queue
+import db_manager
 
 def test_hourly_summary_integration():
     print("=== Hourly Summary Integration Test Start ===")
+    
+    # 0. Initialize DB
+    db_manager.init_db()
     
     # 1. Clear existing pending alerts
     clear_pending_queue()
@@ -37,8 +41,9 @@ def test_hourly_summary_integration():
         {"name": "TQQQ", "rate": 11.2, "price": 58.40, "market": "USA", "date": "2026-05-08"}
     ]
     
-    atomic_write_json(PENDING_ALERTS_FILE, dummy_data)
-    print(f"[2] Injected {len(dummy_data)} dummy items into {PENDING_ALERTS_FILE}.")
+    for item in dummy_data:
+        db_manager.add_to_queue(item)
+    print(f"[2] Injected {len(dummy_data)} dummy items into SQLite pending_queue.")
 
     # 3. Mock send_telegram and call send_hourly_summary
     print("[3] Calling send_hourly_summary(14)...")
@@ -70,7 +75,8 @@ def test_hourly_summary_integration():
             print("[-] Error: send_hourly_summary returned False.")
 
     # 4. Verify queue is cleared
-    if not os.path.exists(PENDING_ALERTS_FILE) or json.load(open(PENDING_ALERTS_FILE)) == []:
+    queue = db_manager.get_queue()
+    if not queue:
         print("[4] Pending queue verified as cleared after successful send.")
     else:
         print("[-] Error: Pending queue was NOT cleared.")
