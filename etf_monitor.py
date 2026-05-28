@@ -135,12 +135,12 @@ def calculate_indicators(ticker_symbol: str) -> Optional[Dict[str, Any]]:
             "macd": round(float(latest['macd']), 3),
             "signal": round(float(latest['signal']), 3),
             "macd_hist": round(float(latest['macd_hist']), 3),
-            "macd_cross": (prev['macd'] < prev['signal']) and (latest['macd'] >= latest['signal']), # 골든크로스
+            "macd_cross": bool((prev['macd'] < prev['signal']) and (latest['macd'] >= latest['signal'])), # 골든크로스
             "ma5": round(float(latest['ma5']), 2),
             "ma20": round(float(latest['ma20']), 2),
-            "ma_bullish": latest['ma5'] > latest['ma20'], # 정배열 초기
+            "ma_bullish": bool(latest['ma5'] > latest['ma20']), # 정배열 초기
             "vol_ratio": round(float(vol_ratio), 2),
-            "vol_spike": vol_ratio >= 1.5, # 평균 거래량 대비 1.5배 이상
+            "vol_spike": bool(vol_ratio >= 1.5), # 평균 거래량 대비 1.5배 이상
             "target": round(float(target_price), 2),
             "stoploss": round(float(stoploss_price), 2)
         }
